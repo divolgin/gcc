@@ -104,7 +104,7 @@ jobs:
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
             ../gcc-${{ needs.get-version.outputs.exact_version }}/configure \
               --prefix=/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
-              --enable-languages=c,c++,fortran,go,jit \
+              --enable-languages=c,c++,fortran \
               --disable-multilib \
               --enable-threads=posix \
               --enable-shared \
@@ -117,7 +117,7 @@ jobs:
               --target=aarch64-linux-gnu \
               --host=x86_64-linux-gnu \
               --build=x86_64-linux-gnu \
-              --enable-languages=c,c++,fortran,go,jit \
+              --enable-languages=c,c++,fortran \
               --disable-multilib \
               --enable-threads=posix \
               --enable-shared \
@@ -189,9 +189,10 @@ jobs:
             --notes "GCC ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
 
           Built from source with the following configuration:
-          - Languages: C, C++, Fortran, Go, JIT
+          - Languages: C, C++, Fortran (bootstrap version)
           - Architectures: x86_64, aarch64
           - Features: Shared and static libraries, POSIX threads
+          - Type: Minimal bootstrap build suitable for compiling more advanced GCC versions
           
           ## Files
           - \`gcc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: GCC build for x86_64 architecture
@@ -202,6 +203,14 @@ jobs:
           \`\`\`bash
           tar -xzf gcc-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
           export PATH=\$PWD/gcc-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
-          \`\`\`" \
+          \`\`\`
+          
+          ## Using as Bootstrap Compiler
+          This minimal build can be used to compile a more feature-rich GCC version with additional options like:
+          - Go and JIT language support
+          - Plugin support (\`--enable-plugin\`, \`--enable-host-shared\`)
+          - Link-time optimization (\`--enable-lto\`)
+          - Security hardening (\`--enable-default-pie\`, \`--enable-default-ssp\`)
+          - Performance optimizations and debugging features" \
             artifacts/gcc-${{ needs.get-version.outputs.exact_version }}-x86_64/gcc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
             artifacts/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
