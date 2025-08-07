@@ -1,0 +1,207 @@
+name: Build GCC from Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'GCC Version to build'
+        required: true
+        default: '15'
+        type: choice
+        options:
+          - '15'
+          - '14'
+          - '13'
+          - '12'
+
+env:
+  # Version mappings - will be used to get exact versions
+  GCC_15_VERSION: '15.1.0'
+  GCC_14_VERSION: '14.3.0'
+  GCC_13_VERSION: '13.3.0'
+  GCC_12_VERSION: '12.4.0'
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      exact_version: ${{ steps.set-version.outputs.exact_version }}
+      major_version: ${{ steps.set-version.outputs.major_version }}
+    steps:
+      - name: Set exact version
+        id: set-version
+        run: |
+          case "${{ github.event.inputs.version }}" in
+            "15")
+              echo "exact_version=${{ env.GCC_15_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=15" >> $GITHUB_OUTPUT
+              ;;
+            "14")
+              echo "exact_version=${{ env.GCC_14_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=14" >> $GITHUB_OUTPUT
+              ;;
+            "13")
+              echo "exact_version=${{ env.GCC_13_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=13" >> $GITHUB_OUTPUT
+              ;;
+            "12")
+              echo "exact_version=${{ env.GCC_12_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=12" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unsupported version: ${{ github.event.inputs.version }}"
+              exit 1
+              ;;
+          esac
+
+  build-gcc:
+    needs: get-version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libgmp-dev \
+            libmpfr-dev \
+            libmpc-dev \
+            libisl-dev \
+            zlib1g-dev \
+            wget \
+            tar \
+            xz-utils \
+            flex \
+            bison \
+            texinfo
+
+      - name: Install cross-compilation tools for aarch64
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Download GCC source
+        run: |
+          wget -q https://ftp.gnu.org/gnu/gcc/gcc-${{ needs.get-version.outputs.exact_version }}/gcc-${{ needs.get-version.outputs.exact_version }}.tar.xz
+          tar -xf gcc-${{ needs.get-version.outputs.exact_version }}.tar.xz
+
+      - name: Download prerequisites
+        run: |
+          cd gcc-${{ needs.get-version.outputs.exact_version }}
+          ./contrib/download_prerequisites
+
+      - name: Configure build
+        run: |
+          mkdir -p build-gcc-${{ matrix.arch }}
+          cd build-gcc-${{ matrix.arch }}
+          
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            ../gcc-${{ needs.get-version.outputs.exact_version }}/configure \
+              --prefix=/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+              --enable-languages=c,c++,fortran,go,jit \
+              --disable-multilib \
+              --enable-threads=posix \
+              --enable-shared \
+              --enable-static \
+              --with-system-zlib \
+              --disable-bootstrap
+          else
+            ../gcc-${{ needs.get-version.outputs.exact_version }}/configure \
+              --prefix=/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+              --target=aarch64-linux-gnu \
+              --host=x86_64-linux-gnu \
+              --build=x86_64-linux-gnu \
+              --enable-languages=c,c++,fortran,go,jit \
+              --disable-multilib \
+              --enable-threads=posix \
+              --enable-shared \
+              --enable-static \
+              --with-system-zlib \
+              --disable-bootstrap \
+              --with-sysroot=/usr/aarch64-linux-gnu \
+              --with-build-sysroot=/usr/aarch64-linux-gnu
+          fi
+
+      - name: Build GCC
+        run: |
+          cd build-gcc-${{ matrix.arch }}
+          make -j$(nproc)
+
+      - name: Install GCC
+        run: |
+          cd build-gcc-${{ matrix.arch }}
+          sudo make install DESTDIR=$PWD/install-root
+
+      - name: Create archive
+        run: |
+          cd build-gcc-${{ matrix.arch }}/install-root/opt
+          tar -czf $GITHUB_WORKSPACE/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          path: gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [get-version, build-gcc]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          find artifacts -type f -name "*.tar.gz" | sort
+
+      - name: Delete existing release if it exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if release exists and delete it
+          if gh release view ${{ needs.get-version.outputs.exact_version }} >/dev/null 2>&1; then
+            echo "Release ${{ needs.get-version.outputs.exact_version }} exists, deleting..."
+            gh release delete ${{ needs.get-version.outputs.exact_version }} --yes
+          else
+            echo "Release ${{ needs.get-version.outputs.exact_version }} does not exist"
+          fi
+
+      - name: Create new release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release
+          gh release create ${{ needs.get-version.outputs.exact_version }} \
+            --title "GCC ${{ needs.get-version.outputs.exact_version }}" \
+            --notes "GCC ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
+
+          Built from source with the following configuration:
+          - Languages: C, C++, Fortran, Go, JIT
+          - Architectures: x86_64, aarch64
+          - Features: Shared and static libraries, POSIX threads
+          
+          ## Files
+          - \`gcc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: GCC build for x86_64 architecture
+          - \`gcc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: GCC build for aarch64 architecture
+          
+          ## Installation
+          Extract the appropriate archive and add the \`bin\` directory to your PATH:
+          \`\`\`bash
+          tar -xzf gcc-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          export PATH=\$PWD/gcc-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          \`\`\`" \
+            artifacts/gcc-${{ needs.get-version.outputs.exact_version }}-x86_64/gcc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
