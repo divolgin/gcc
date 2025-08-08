@@ -105,13 +105,15 @@ jobs:
           
           # Native build configuration for both architectures
           # Use optimized flags without debug info to reduce binary size
+          # Build static binaries to eliminate glibc runtime dependencies
           CFLAGS="-O2" CXXFLAGS="-O2" \
+          LDFLAGS="-static" \
           ../gcc-${{ needs.get-version.outputs.exact_version }}/configure \
             --prefix=/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
             --enable-languages=c,c++,fortran \
             --disable-multilib \
             --enable-threads=posix \
-            --enable-shared \
+            --disable-shared \
             --enable-static \
             --with-system-zlib \
             --disable-bootstrap
@@ -179,11 +181,11 @@ jobs:
           Built from source with the following configuration:
           - Languages: C, C++, Fortran (bootstrap version)
           - Architectures: x86_64 (native), aarch64 (native ARM64)
-          - Features: Shared and static libraries, POSIX threads
-          - Type: Minimal bootstrap build suitable for compiling more advanced GCC versions
+          - Features: Static libraries, POSIX threads
+          - Type: Static bootstrap build suitable for compiling more advanced GCC versions
           - Build method: Native compilation on respective architectures
-          - Optimization: Stripped binaries for reduced download size
-          - Compatibility: Built on Ubuntu 22.04 with glibc 2.35 (compatible with glibc 2.35+)
+          - Optimization: Stripped static binaries for reduced download size
+          - Compatibility: Statically linked - no glibc runtime dependencies
           
           ## Files
           - \`gcc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: GCC build for x86_64 architecture
