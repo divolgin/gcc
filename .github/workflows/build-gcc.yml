@@ -56,11 +56,15 @@ jobs:
 
   build-gcc:
     needs: get-version
-    runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       matrix:
-        arch: [x86_64, aarch64]
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-latest-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -82,10 +86,7 @@ jobs:
             bison \
             texinfo
 
-      - name: Install cross-compilation tools for aarch64
-        if: matrix.arch == 'aarch64'
-        run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
+      # No cross-compilation tools needed - using native ARM64 runner for aarch64
 
       - name: Download GCC source
         run: |
@@ -102,33 +103,16 @@ jobs:
           mkdir -p build-gcc-${{ matrix.arch }}
           cd build-gcc-${{ matrix.arch }}
           
-          if [ "${{ matrix.arch }}" = "x86_64" ]; then
-            ../gcc-${{ needs.get-version.outputs.exact_version }}/configure \
-              --prefix=/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
-              --enable-languages=c,c++,fortran \
-              --disable-multilib \
-              --enable-threads=posix \
-              --enable-shared \
-              --enable-static \
-              --with-system-zlib \
-              --disable-bootstrap
-          else
-            ../gcc-${{ needs.get-version.outputs.exact_version }}/configure \
-              --prefix=/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
-              --target=aarch64-linux-gnu \
-              --host=x86_64-linux-gnu \
-              --build=x86_64-linux-gnu \
-              --enable-languages=c,c++,fortran \
-              --disable-multilib \
-              --enable-threads=posix \
-              --enable-shared \
-              --enable-static \
-              --with-system-zlib \
-              --disable-bootstrap \
-              --with-sysroot=/usr/aarch64-linux-gnu \
-              --with-build-sysroot=/usr/aarch64-linux-gnu \
-              --with-native-system-header-dir=/include
-          fi
+          # Native build configuration for both architectures
+          ../gcc-${{ needs.get-version.outputs.exact_version }}/configure \
+            --prefix=/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --enable-languages=c,c++,fortran \
+            --disable-multilib \
+            --enable-threads=posix \
+            --enable-shared \
+            --enable-static \
+            --with-system-zlib \
+            --disable-bootstrap
 
       - name: Build GCC
         run: |
@@ -192,9 +176,10 @@ jobs:
 
           Built from source with the following configuration:
           - Languages: C, C++, Fortran (bootstrap version)
-          - Architectures: x86_64, aarch64
+          - Architectures: x86_64 (native), aarch64 (native ARM64)
           - Features: Shared and static libraries, POSIX threads
           - Type: Minimal bootstrap build suitable for compiling more advanced GCC versions
+          - Build method: Native compilation on respective architectures
           
           ## Files
           - \`gcc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: GCC build for x86_64 architecture
