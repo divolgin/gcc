@@ -57,6 +57,7 @@ jobs:
   build-gcc:
     needs: get-version
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       matrix:
         arch: [x86_64, aarch64]
@@ -84,7 +85,7 @@ jobs:
       - name: Install cross-compilation tools for aarch64
         if: matrix.arch == 'aarch64'
         run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Download GCC source
         run: |
@@ -125,7 +126,8 @@ jobs:
               --with-system-zlib \
               --disable-bootstrap \
               --with-sysroot=/usr/aarch64-linux-gnu \
-              --with-build-sysroot=/usr/aarch64-linux-gnu
+              --with-build-sysroot=/usr/aarch64-linux-gnu \
+              --with-native-system-header-dir=/include
           fi
 
       - name: Build GCC
