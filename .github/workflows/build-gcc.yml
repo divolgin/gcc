@@ -108,14 +108,13 @@ jobs:
           CFLAGS="-O2" CXXFLAGS="-O2" \
           ../gcc-${{ needs.get-version.outputs.exact_version }}/configure \
             --prefix=/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
-            --enable-languages=c,c++,fortran,go,jit \
+            --enable-languages=c,c++,fortran \
             --disable-multilib \
             --enable-threads=posix \
             --enable-shared \
             --enable-static \
             --with-system-zlib \
-            --disable-bootstrap \
-            --enable-host-shared
+            --disable-bootstrap
 
       - name: Build GCC
         run: |
@@ -178,10 +177,10 @@ jobs:
             --notes "GCC ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
 
           Built from source with the following configuration:
-          - Languages: C, C++, Fortran, Go, JIT
+          - Languages: C, C++, Fortran (bootstrap version)
           - Architectures: x86_64 (native), aarch64 (native ARM64)
           - Features: Shared and static libraries, POSIX threads
-          - Type: Bootstrap build with Go and JIT support
+          - Type: Minimal bootstrap build suitable for compiling more advanced GCC versions
           - Build method: Native compilation on respective architectures
           - Optimization: Stripped binaries for reduced download size
           
