@@ -80,11 +80,20 @@ jobs:
             flex \
             bison \
             texinfo \
-            zlib1g-dev
+            zlib1g-dev \
+            libzstd-dev
           
-          # Verify static zlib library is available
-          ls -la /usr/lib/*/libz.a || echo "Static zlib not found in expected location"
+          # Verify static libraries are available
+          echo "Checking for static zlib library..."
           find /usr -name "libz.a" 2>/dev/null || echo "Static zlib library not found"
+          echo "Checking for static zstd library..."
+          find /usr -name "libzstd.a" 2>/dev/null || echo "Static zstd library not found"
+          
+          # Ensure we have the static libraries in the expected location
+          ZLIB_STATIC=$(find /usr -name "libz.a" 2>/dev/null | head -1)
+          ZSTD_STATIC=$(find /usr -name "libzstd.a" 2>/dev/null | head -1)
+          echo "Static zlib found at: $ZLIB_STATIC"
+          echo "Static zstd found at: $ZSTD_STATIC"
 
       - name: Download Binutils source
         run: |
@@ -99,13 +108,17 @@ jobs:
           mkdir -p build-binutils-${{ matrix.arch }}
           cd build-binutils-${{ matrix.arch }}
           
+          # Find static library paths
+          ZLIB_STATIC=$(find /usr -name "libz.a" 2>/dev/null | head -1)
+          ZSTD_STATIC=$(find /usr -name "libzstd.a" 2>/dev/null | head -1)
+          
           # Native build configuration for both architectures
           # Use optimized flags without debug info to reduce binary size
           # Build static binaries to eliminate glibc runtime dependencies
-          # Force static linking of zlib by providing explicit library path
+          # Force static linking of zlib and zstd by providing explicit library paths
           CFLAGS="-O2" CXXFLAGS="-O2" \
           LDFLAGS="-static" \
-          LIBS="-lz" \
+          LIBS="$ZLIB_STATIC $ZSTD_STATIC" \
           ../binutils-${{ needs.get-version.outputs.exact_version }}/configure \
             --prefix=/opt/binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
             --disable-shared \
@@ -115,7 +128,6 @@ jobs:
             --enable-gold \
             --enable-ld=default \
             --enable-plugins \
-            --with-system-zlib \
             --disable-werror
 
       - name: Build Binutils
@@ -132,17 +144,39 @@ jobs:
         run: |
           cd build-binutils-${{ matrix.arch }}/install-root/opt/binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
           echo "Checking static linking of key binutils tools..."
+          echo "Expected: All binaries should be statically linked with no dynamic dependencies on libz.so.1 or libzstd.so.1"
+          echo
           
           # Check if binaries are statically linked (should show 'statically linked')
+          FAILED=0
           for tool in as ld ar nm objdump objcopy strip; do
             if [ -f "$tool" ]; then
               echo "=== $tool ==="
               file "$tool"
               echo "Dynamic dependencies:"
-              ldd "$tool" 2>/dev/null || echo "  (statically linked)"
+              if ldd_output=$(ldd "$tool" 2>/dev/null); then
+                echo "$ldd_output"
+                # Check if it has dynamic dependencies on zlib or zstd
+                if echo "$ldd_output" | grep -E "(libz\.so|libzstd\.so)"; then
+                  echo "❌ ERROR: $tool is dynamically linked to zlib/zstd libraries"
+                  FAILED=1
+                else
+                  echo "✅ OK: $tool has no zlib/zstd dynamic dependencies"
+                fi
+              else
+                echo "  (statically linked)"
+                echo "✅ OK: $tool is statically linked"
+              fi
               echo
             fi
           done
+          
+          if [ $FAILED -eq 1 ]; then
+            echo "❌ FAILED: Some binaries are not properly statically linked"
+            exit 1
+          else
+            echo "✅ SUCCESS: All binaries are properly statically linked"
+          fi
 
       - name: Create archive
         run: |
