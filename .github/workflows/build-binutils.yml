@@ -88,6 +88,9 @@ jobs:
 
       - name: Download Binutils source
         run: |
+          # Try multiple mirrors for reliability
+          wget -q https://mirror.csclub.uwaterloo.ca/gnu/binutils/binutils-${{ needs.get-version.outputs.exact_version }}.tar.xz || \
+          wget -q https://mirrors.kernel.org/gnu/binutils/binutils-${{ needs.get-version.outputs.exact_version }}.tar.xz || \
           wget -q https://ftp.gnu.org/gnu/binutils/binutils-${{ needs.get-version.outputs.exact_version }}.tar.xz
           tar -xf binutils-${{ needs.get-version.outputs.exact_version }}.tar.xz
 

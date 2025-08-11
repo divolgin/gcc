@@ -90,6 +90,9 @@ jobs:
 
       - name: Download GCC source
         run: |
+          # Try multiple mirrors for reliability
+          wget -q https://mirror.csclub.uwaterloo.ca/gnu/gcc/gcc-${{ needs.get-version.outputs.exact_version }}/gcc-${{ needs.get-version.outputs.exact_version }}.tar.xz || \
+          wget -q https://mirrors.kernel.org/gnu/gcc/gcc-${{ needs.get-version.outputs.exact_version }}/gcc-${{ needs.get-version.outputs.exact_version }}.tar.xz || \
           wget -q https://ftp.gnu.org/gnu/gcc/gcc-${{ needs.get-version.outputs.exact_version }}/gcc-${{ needs.get-version.outputs.exact_version }}.tar.xz
           tar -xf gcc-${{ needs.get-version.outputs.exact_version }}.tar.xz
 
