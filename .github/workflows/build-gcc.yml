@@ -156,6 +156,42 @@ jobs:
           echo "Copying system headers..."
           if [ -d "/usr/include" ]; then
             cp -r /usr/include/* "$SYSROOT/usr/include/" 2>/dev/null || true
+          else
+            printf "❌ Missing /usr/include directory\n"
+          fi
+          
+          # Copy architecture-specific headers from the multiarch directory
+          if [ -d "/usr/include/$MULTIARCH_DIR" ]; then
+            echo "Copying architecture-specific headers from /usr/include/$MULTIARCH_DIR"
+            # Create the bits directory structure in the main include path
+            mkdir -p "$SYSROOT/usr/include/bits"
+            mkdir -p "$SYSROOT/usr/include/gnu"
+            mkdir -p "$SYSROOT/usr/include/sys"
+            
+            # Copy architecture-specific bits headers to the main include directory
+            if [ -d "/usr/include/$MULTIARCH_DIR/bits" ]; then
+              cp -r /usr/include/$MULTIARCH_DIR/bits/* "$SYSROOT/usr/include/bits/" 2>/dev/null || true
+            else
+              printf "❌ Missing /usr/include/$MULTIARCH_DIR/bits directory\n"
+            fi
+            
+            # Copy other architecture-specific headers
+            if [ -d "/usr/include/$MULTIARCH_DIR/gnu" ]; then
+              cp -r /usr/include/$MULTIARCH_DIR/gnu/* "$SYSROOT/usr/include/gnu/" 2>/dev/null || true
+            else
+              printf "❌ Missing /usr/include/$MULTIARCH_DIR/gnu directory\n"
+            fi
+            
+            if [ -d "/usr/include/$MULTIARCH_DIR/sys" ]; then
+              cp -r /usr/include/$MULTIARCH_DIR/sys/* "$SYSROOT/usr/include/sys/" 2>/dev/null || true
+            else
+              printf "❌ Missing /usr/include/$MULTIARCH_DIR/sys directory\n"
+            fi
+            
+            # Also copy the entire multiarch directory structure
+            cp -r /usr/include/$MULTIARCH_DIR "$SYSROOT/usr/include/" 2>/dev/null || true
+          else
+            printf "❌ Missing /usr/include/$MULTIARCH_DIR directory\n"
           fi
           
           # Create lib64 symlink for x86_64
@@ -168,6 +204,36 @@ jobs:
           ls -la "$SYSROOT"/lib/ | head -20
           echo "Headers available:"
           ls -la "$SYSROOT"/usr/include/ | head -10
+          
+          # Check for critical architecture-specific headers
+          echo "Checking for critical headers..."
+          if [ -f "$SYSROOT/usr/include/bits/libc-header-start.h" ]; then
+            printf "✅ Found bits/libc-header-start.h\n"
+          else
+            printf "❌ Missing bits/libc-header-start.h\n"
+          fi
+          
+          if [ -f "$SYSROOT/usr/include/bits/wordsize.h" ]; then
+            printf "✅ Found bits/wordsize.h\n"
+          else
+            printf "❌ Missing bits/wordsize.h\n"
+          fi
+          
+          if [ -f "$SYSROOT/usr/include/gnu/stubs.h" ]; then
+            printf "✅ Found gnu/stubs.h\n"
+          else
+            printf "❌ Missing gnu/stubs.h\n"
+          fi
+          
+          # List architecture-specific directories
+          echo "Architecture-specific include directories:"
+          ls -la "$SYSROOT/usr/include/" | grep "$MULTIARCH_DIR" || echo "No multiarch directory found"
+          if [ -d "$SYSROOT/usr/include/bits" ]; then
+            echo "bits/ directory contents (first 10):"
+            ls -la "$SYSROOT/usr/include/bits/" | head -10
+          else
+            printf "❌ Missing bits directory in sysroot\n"
+          fi
 
       - name: Configure build
         run: |
