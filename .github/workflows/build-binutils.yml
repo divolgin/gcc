@@ -147,13 +147,12 @@ jobs:
           ZSTD_CFLAGS="" ZSTD_LIBS="$ZSTD_STATIC" \
           ../binutils-${{ needs.get-version.outputs.exact_version }}/configure \
             --prefix=/opt/binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
-            --disable-shared \
-            --enable-static \
             --disable-multilib \
             --enable-64-bit-bfd \
             --enable-gold \
             --enable-ld=default \
-            --disable-plugins \
+            --with-system-zlib \
+            --with-zstd \
             --disable-werror
 
       - name: Build Binutils
@@ -164,18 +163,11 @@ jobs:
           ZLIB_STATIC=$(find /usr -name "libz.a" 2>/dev/null | head -1)
           ZSTD_STATIC=$(find /usr -name "libzstd.a" 2>/dev/null | head -1)
           
-          # Set environment variables to force static linking at all build stages
+          # Set environment variables to force static linking during make
           export LDFLAGS="-static -L/usr/lib/$(uname -m)-linux-gnu"
           export LIBS="$ZLIB_STATIC $ZSTD_STATIC"
-          export AM_LDFLAGS="-static"
-          export CFLAGS_FOR_BUILD="-O2 -static"
-          export LDFLAGS_FOR_BUILD="-static"
-          export CFLAGS_FOR_HOST="-O2 -static"
-          export LDFLAGS_FOR_HOST="-static"
-          export CFLAGS_FOR_TARGET="-O2 -static"
-          export LDFLAGS_FOR_TARGET="-static"
           
-          # Force static linking during make
+          # Build with static linking enforced
           make -j$(nproc)
 
       - name: Install Binutils
