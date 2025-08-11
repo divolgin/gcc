@@ -144,6 +144,126 @@ jobs:
           cd build-gcc-${{ matrix.arch }}
           sudo make install-strip DESTDIR=$PWD/install-root
 
+      - name: Create glibc sysroot package
+        run: |
+          echo "=== Creating glibc sysroot package ==="
+          
+          # Create sysroot directory structure
+          SYSROOT_DIR="glibc-sysroot-${{ matrix.arch }}"
+          mkdir -p "$SYSROOT_DIR"/{lib,lib64,usr/{lib,include}}
+          
+          # Get the system's multiarch directory
+          MULTIARCH_DIR=$(gcc -print-multiarch 2>/dev/null || echo "$(uname -m)-linux-gnu")
+          SYSTEM_LIB_DIR="/usr/lib/$MULTIARCH_DIR"
+          
+          echo "Building glibc sysroot for ${{ matrix.arch }}"
+          echo "System multiarch directory: $MULTIARCH_DIR"
+          echo "System lib directory: $SYSTEM_LIB_DIR"
+          
+          # Copy C runtime startup files (crt*.o)
+          echo "Copying C runtime startup files..."
+          if [ -d "$SYSTEM_LIB_DIR" ]; then
+            find "$SYSTEM_LIB_DIR" -name "crt*.o" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+            find /usr/lib -name "crt*.o" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          fi
+          
+          # Copy essential glibc libraries (both static and dynamic)
+          echo "Copying glibc libraries..."
+          for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 libresolv.so.2 librt.so.1 libutil.so.1; do
+            find /lib /usr/lib -name "$lib" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          done
+          
+          # Copy static libraries if available
+          for lib in libc.a libm.a libpthread.a libdl.a libresolv.a librt.a libutil.a; do
+            find /usr/lib -name "$lib" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          done
+          
+          # Copy dynamic linker
+          find /lib /lib64 -name "ld-linux*.so*" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          find /lib /lib64 -name "ld.so.1" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          
+          # Copy system headers
+          echo "Copying system headers..."
+          if [ -d "/usr/include" ]; then
+            cp -r /usr/include/* "$SYSROOT_DIR/usr/include/" 2>/dev/null || true
+          fi
+          
+          # Copy architecture-specific headers
+          if [ -d "/usr/include/$MULTIARCH_DIR" ]; then
+            echo "Copying architecture-specific headers from /usr/include/$MULTIARCH_DIR"
+            # Merge architecture-specific headers into main include directory
+            cp -r /usr/include/$MULTIARCH_DIR/* "$SYSROOT_DIR/usr/include/" 2>/dev/null || true
+            # Also keep the multiarch directory structure for compatibility
+            cp -r /usr/include/$MULTIARCH_DIR "$SYSROOT_DIR/usr/include/" 2>/dev/null || true
+          fi
+          
+          # Create lib64 symlink for x86_64
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            ln -sf lib "$SYSROOT_DIR/lib64"
+          fi
+          
+          # Create usage documentation
+          cat > "$SYSROOT_DIR/README.md" << 'EOF'
+          # glibc Sysroot Package
+          
+          This package contains glibc headers and libraries for use with GCC.
+          
+          ## Contents
+          - `lib/`: C runtime objects (crt*.o), glibc libraries (static and dynamic)
+          - `usr/include/`: System headers including architecture-specific headers
+          - `usr/lib/`: Additional system libraries
+          
+          ## Usage with GCC
+          
+          ### Method 1: Use --sysroot flag
+          ```bash
+          gcc --sysroot=/path/to/glibc-sysroot-<arch> -o hello hello.c
+          ```
+          
+          ### Method 2: Set environment variables
+          ```bash
+          export CPATH=/path/to/glibc-sysroot-<arch>/usr/include
+          export LIBRARY_PATH=/path/to/glibc-sysroot-<arch>/lib
+          gcc -o hello hello.c
+          ```
+          
+          ### Method 3: Copy to system locations (if you have permissions)
+          ```bash
+          sudo cp -r lib/* /usr/local/lib/
+          sudo cp -r usr/include/* /usr/local/include/
+          gcc -o hello hello.c
+          ```
+          
+          ## Static vs Dynamic Linking
+          - For portable binaries: `gcc -static --sysroot=... -o hello hello.c`
+          - For system binaries: `gcc --sysroot=... -o hello hello.c`
+          
+          This sysroot is compatible with the GCC build from the same architecture.
+          EOF
+          
+          # Verify sysroot contents
+          echo "=== Sysroot Contents ==="
+          echo "Runtime objects:"
+          ls -la "$SYSROOT_DIR/lib/" | grep "crt" || echo "No CRT files found"
+          echo "Libraries (first 10):"
+          ls -la "$SYSROOT_DIR/lib/" | head -10
+          echo "Headers (first 10):"
+          ls -la "$SYSROOT_DIR/usr/include/" | head -10
+          
+          # Check for critical headers
+          echo "=== Critical Headers Check ==="
+          for header in "stdio.h" "stdlib.h" "bits/libc-header-start.h" "bits/wordsize.h" "gnu/stubs.h"; do
+            if [ -f "$SYSROOT_DIR/usr/include/$header" ]; then
+              echo "✅ Found $header"
+            else
+              echo "❌ Missing $header"
+            fi
+          done
+          
+          # Create sysroot archive
+          tar -czf "glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz" "$SYSROOT_DIR"
+          echo "✅ Created glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz"
+
       - name: Verify static linking
         run: |
           cd build-gcc-${{ matrix.arch }}/install-root/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
@@ -175,11 +295,17 @@ jobs:
           cd build-gcc-${{ matrix.arch }}/install-root/opt
           tar -czf $GITHUB_WORKSPACE/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
 
-      - name: Upload artifact
+      - name: Upload GCC artifact
         uses: actions/upload-artifact@v4
         with:
           name: gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
           path: gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
+
+      - name: Upload sysroot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          path: glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
 
   create-release:
     needs: [get-version, build-gcc]
@@ -233,14 +359,44 @@ jobs:
           - Compatibility: Statically linked - no glibc runtime dependencies
           
           ## Files
+          
+          ### GCC Compiler
           - \`gcc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: GCC build for x86_64 architecture
           - \`gcc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: GCC build for aarch64 architecture
           
-          ## Installation
-          Extract the appropriate archive and add the \`bin\` directory to your PATH:
+          ### glibc Sysroot (Runtime Libraries)
+          - \`glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: glibc headers and libraries for x86_64
+          - \`glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: glibc headers and libraries for aarch64
+          
+          ## Installation & Usage
+          
+          ### Option 1: GCC Only (requires system glibc)
           \`\`\`bash
           tar -xzf gcc-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
           export PATH=\$PWD/gcc-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          gcc -o hello hello.c  # Works if system has compatible glibc
+          \`\`\`
+          
+          ### Option 2: GCC + Sysroot (self-contained, recommended)
+          \`\`\`bash
+          # Extract both packages
+          tar -xzf gcc-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          tar -xzf glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          
+          # Set up environment
+          export PATH=\$PWD/gcc-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          export SYSROOT=\$PWD/glibc-sysroot-<arch>
+          
+          # Compile with sysroot
+          gcc --sysroot=\$SYSROOT -o hello hello.c
+          gcc --sysroot=\$SYSROOT -static -o hello_static hello.c  # Fully portable binary
+          \`\`\`
+          
+          ### Option 3: Environment Variables
+          \`\`\`bash
+          export CPATH=\$PWD/glibc-sysroot-<arch>/usr/include
+          export LIBRARY_PATH=\$PWD/glibc-sysroot-<arch>/lib
+          gcc -o hello hello.c  # No --sysroot needed
           \`\`\`
           
           ## Using as Bootstrap Compiler
@@ -251,4 +407,7 @@ jobs:
           - Security hardening (\`--enable-default-pie\`, \`--enable-default-ssp\`)
           - Performance optimizations and debugging features" \
             artifacts/gcc-${{ needs.get-version.outputs.exact_version }}-x86_64/gcc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz \
+            artifacts/glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-x86_64/glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-aarch64/glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
             artifacts/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
