@@ -81,6 +81,10 @@ jobs:
             bison \
             texinfo \
             zlib1g-dev
+          
+          # Verify static zlib library is available
+          ls -la /usr/lib/*/libz.a || echo "Static zlib not found in expected location"
+          find /usr -name "libz.a" 2>/dev/null || echo "Static zlib library not found"
 
       - name: Download Binutils source
         run: |
@@ -95,8 +99,10 @@ jobs:
           # Native build configuration for both architectures
           # Use optimized flags without debug info to reduce binary size
           # Build static binaries to eliminate glibc runtime dependencies
+          # Force static linking of zlib by providing explicit library path
           CFLAGS="-O2" CXXFLAGS="-O2" \
           LDFLAGS="-static" \
+          LIBS="-lz" \
           ../binutils-${{ needs.get-version.outputs.exact_version }}/configure \
             --prefix=/opt/binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
             --disable-shared \
@@ -118,6 +124,22 @@ jobs:
         run: |
           cd build-binutils-${{ matrix.arch }}
           sudo make install-strip DESTDIR=$PWD/install-root
+
+      - name: Verify static linking
+        run: |
+          cd build-binutils-${{ matrix.arch }}/install-root/opt/binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
+          echo "Checking static linking of key binutils tools..."
+          
+          # Check if binaries are statically linked (should show 'statically linked')
+          for tool in as ld ar nm objdump objcopy strip; do
+            if [ -f "$tool" ]; then
+              echo "=== $tool ==="
+              file "$tool"
+              echo "Dynamic dependencies:"
+              ldd "$tool" 2>/dev/null || echo "  (statically linked)"
+              echo
+            fi
+          done
 
       - name: Create archive
         run: |
