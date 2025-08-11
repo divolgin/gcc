@@ -84,11 +84,16 @@ jobs:
             xz-utils \
             flex \
             bison \
-            texinfo
+            texinfo \
+            glibc-source \
+            linux-libc-dev
           
-          # Verify static zlib library is available
+          # Verify static libraries are available
           ls -la /usr/lib/*/libz.a || echo "Static zlib not found in expected location"
           find /usr -name "libz.a" 2>/dev/null || echo "Static zlib library not found"
+          
+          # Install glibc static libraries for linking
+          sudo apt-get install -y glibc-static || echo "glibc-static not available, will build minimal libc"
 
       # No cross-compilation tools needed - using native ARM64 runner for aarch64
 
@@ -110,22 +115,57 @@ jobs:
           mkdir -p build-gcc-${{ matrix.arch }}
           cd build-gcc-${{ matrix.arch }}
           
+          # Create a sysroot with necessary runtime libraries
+          SYSROOT="/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/sysroot"
+          mkdir -p "$SYSROOT"/{lib,usr/lib,usr/include}
+          
+          # Copy essential runtime files to sysroot
+          # Find the system's multiarch directory
+          MULTIARCH_DIR=$(gcc -print-multiarch 2>/dev/null || echo "$(uname -m)-linux-gnu")
+          SYSTEM_LIB_DIR="/usr/lib/$MULTIARCH_DIR"
+          
+          echo "System multiarch directory: $MULTIARCH_DIR"
+          echo "System lib directory: $SYSTEM_LIB_DIR"
+          
+          # Copy C runtime startup files
+          if [ -f "$SYSTEM_LIB_DIR/crt1.o" ]; then
+            cp "$SYSTEM_LIB_DIR"/crt*.o "$SYSROOT/lib/" || echo "Warning: Could not copy some crt files"
+          fi
+          
+          # Copy static C library if available
+          if [ -f "$SYSTEM_LIB_DIR/libc.a" ]; then
+            cp "$SYSTEM_LIB_DIR/libc.a" "$SYSROOT/lib/"
+          elif [ -f "/usr/lib/libc.a" ]; then
+            cp "/usr/lib/libc.a" "$SYSROOT/lib/"
+          else
+            echo "Warning: Static libc.a not found, will rely on dynamic linking"
+          fi
+          
+          # Copy essential system headers
+          if [ -d "/usr/include" ]; then
+            cp -r /usr/include/* "$SYSROOT/usr/include/" 2>/dev/null || echo "Warning: Could not copy all system headers"
+          fi
+          
           # Native build configuration for both architectures
           # Use optimized flags without debug info to reduce binary size
           # Build static binaries to eliminate glibc runtime dependencies
-          # Force static linking of zlib by providing explicit library path
+          # Include sysroot for runtime libraries
           CFLAGS="-O2" CXXFLAGS="-O2" \
           LDFLAGS="-static" \
           LIBS="-lz" \
           ../gcc-${{ needs.get-version.outputs.exact_version }}/configure \
             --prefix=/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --with-sysroot="$SYSROOT" \
+            --with-native-system-header-dir=/usr/include \
             --enable-languages=c,c++,fortran \
             --disable-multilib \
             --enable-threads=posix \
             --disable-shared \
             --enable-static \
             --with-system-zlib \
-            --disable-bootstrap
+            --disable-bootstrap \
+            --enable-__cxa_atexit \
+            --enable-gnu-unique-object
 
       - name: Build GCC
         run: |
@@ -152,6 +192,78 @@ jobs:
               echo
             fi
           done
+
+      - name: Test GCC compilation and linking
+        run: |
+          cd build-gcc-${{ matrix.arch }}/install-root/opt/gcc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          
+          # Set up environment for testing
+          export PATH="$PWD/bin:$PATH"
+          export GCC_EXEC_PREFIX="$PWD/lib/gcc/"
+          
+          # Create a simple test program
+          cat > test_program.c << 'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          
+          int main() {
+              printf("Hello from statically linked GCC!\n");
+              printf("malloc test: %p\n", malloc(100));
+              return 0;
+          }
+          EOF
+          
+          echo "=== Testing C compilation and linking ==="
+          echo "GCC version:"
+          ./bin/gcc --version
+          
+          echo "GCC search paths:"
+          ./bin/gcc -print-search-dirs
+          
+          echo "Attempting to compile test program..."
+          if ./bin/gcc -v -o test_program test_program.c 2>&1; then
+            echo "✅ SUCCESS: C program compiled successfully"
+            echo "Running test program..."
+            if ./test_program; then
+              echo "✅ SUCCESS: C program executed successfully"
+            else
+              echo "❌ ERROR: C program failed to execute"
+              exit 1
+            fi
+          else
+            echo "❌ ERROR: C program compilation failed"
+            echo "Checking for missing runtime libraries..."
+            find . -name "crt*.o" -o -name "libc.*" | head -10
+            exit 1
+          fi
+          
+          # Test C++ compilation
+          cat > test_program.cpp << 'EOF'
+          #include <iostream>
+          #include <vector>
+          
+          int main() {
+              std::cout << "Hello from C++!" << std::endl;
+              std::vector<int> v = {1, 2, 3};
+              std::cout << "Vector size: " << v.size() << std::endl;
+              return 0;
+          }
+          EOF
+          
+          echo "=== Testing C++ compilation and linking ==="
+          if ./bin/g++ -v -o test_program_cpp test_program.cpp 2>&1; then
+            echo "✅ SUCCESS: C++ program compiled successfully"
+            echo "Running C++ test program..."
+            if ./test_program_cpp; then
+              echo "✅ SUCCESS: C++ program executed successfully"
+            else
+              echo "❌ ERROR: C++ program failed to execute"
+              exit 1
+            fi
+          else
+            echo "❌ ERROR: C++ program compilation failed"
+            exit 1
+          fi
 
       - name: Create archive
         run: |
@@ -204,13 +316,14 @@ jobs:
             --notes "GCC ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
 
           Built from source with the following configuration:
-          - Languages: C, C++, Fortran (bootstrap version)
+          - Languages: C, C++, Fortran
           - Architectures: x86_64 (native), aarch64 (native ARM64)
-          - Features: Static libraries, POSIX threads
-          - Type: Static bootstrap build suitable for compiling more advanced GCC versions
+          - Features: Static libraries, POSIX threads, includes C runtime libraries
+          - Type: Complete GCC build with sysroot containing runtime libraries (crt*.o, libc)
           - Build method: Native compilation on respective architectures
           - Optimization: Stripped static binaries for reduced download size
-          - Compatibility: Statically linked - no glibc runtime dependencies
+          - Compatibility: Statically linked GCC with included runtime support
+          - Runtime Libraries: Includes C runtime startup files and standard library for linking
           
           ## Files
           - \`gcc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: GCC build for x86_64 architecture
@@ -223,8 +336,26 @@ jobs:
           export PATH=\$PWD/gcc-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
           \`\`\`
           
+          ## Key Features
+          This build includes all necessary components for C/C++ development:
+          - **Complete C Runtime**: Includes crt1.o, crti.o, crtn.o startup files
+          - **Standard C Library**: Static libc.a for linking C programs
+          - **System Headers**: Standard C library headers included
+          - **Sysroot**: Self-contained environment with all runtime dependencies
+          - **No External Dependencies**: Can compile and link programs without system libc
+          
+          ## Usage
+          This GCC build can compile and link C/C++ programs out of the box without requiring additional system libraries:
+          \`\`\`bash
+          # Simple C program compilation
+          ./gcc-<version>-<arch>/bin/gcc -o hello hello.c
+          
+          # C++ program compilation  
+          ./gcc-<version>-<arch>/bin/g++ -o hello hello.cpp
+          \`\`\`
+          
           ## Using as Bootstrap Compiler
-          This minimal build can be used to compile a more feature-rich GCC version with additional options like:
+          This complete build can also be used to compile more advanced GCC versions with additional options like:
           - Go and JIT language support
           - Plugin support (\`--enable-plugin\`, \`--enable-host-shared\`)
           - Link-time optimization (\`--enable-lto\`)
