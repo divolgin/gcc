@@ -108,9 +108,10 @@ jobs:
           mkdir -p build-binutils-${{ matrix.arch }}
           cd build-binutils-${{ matrix.arch }}
           
-          # Find static library paths
-          ZLIB_STATIC=$(find /usr -name "libz.a" 2>/dev/null | head -1)
-          ZSTD_STATIC=$(find /usr -name "libzstd.a" 2>/dev/null | head -1)
+          # Find static library paths - be specific to avoid wrong architecture libraries
+          ARCH_PATH="/usr/lib/$(uname -m)-linux-gnu"
+          ZLIB_STATIC="$ARCH_PATH/libz.a"
+          ZSTD_STATIC="$ARCH_PATH/libzstd.a"
           
           echo "Using static libraries:"
           echo "  zlib: $ZLIB_STATIC"
@@ -172,9 +173,10 @@ jobs:
         run: |
           cd build-binutils-${{ matrix.arch }}
           
-          # Find static library paths again for make
-          ZLIB_STATIC=$(find /usr -name "libz.a" 2>/dev/null | head -1)
-          ZSTD_STATIC=$(find /usr -name "libzstd.a" 2>/dev/null | head -1)
+          # Find static library paths again for make - be specific to avoid wrong architecture libraries
+          ARCH_PATH="/usr/lib/$(uname -m)-linux-gnu"
+          ZLIB_STATIC="$ARCH_PATH/libz.a"
+          ZSTD_STATIC="$ARCH_PATH/libzstd.a"
           
           # Set environment variables to force static linking during make
           export LDFLAGS="-static -L$PWD/custom-static-libs -L/usr/lib/$(uname -m)-linux-gnu"
