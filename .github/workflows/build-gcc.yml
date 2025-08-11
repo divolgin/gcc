@@ -13,6 +13,11 @@ on:
           - '14'
           - '13'
           - '12'
+      branch:
+        description: 'Branch to checkout for workflow'
+        required: false
+        default: 'main'
+        type: string
 
 env:
   # Version mappings - will be used to get exact versions
@@ -68,6 +73,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
       - name: Set up build environment
         run: |
@@ -153,6 +160,16 @@ jobs:
             fi
           done
 
+      - name: Build summary
+        run: |
+          echo "=== GCC Build Complete ==="
+          if [ "${{ github.event.inputs.branch }}" != "main" ] && [ "${{ github.event.inputs.branch }}" != "" ]; then
+            echo "ℹ️  Note: Built from branch '${{ github.event.inputs.branch }}' - no release will be created"
+            echo "   Artifacts are available for download from this workflow run"
+          else
+            echo "✅ Built from main branch - release will be created with artifacts"
+          fi
+
       - name: Create archive
         run: |
           cd build-gcc-${{ matrix.arch }}/install-root/opt
@@ -167,11 +184,14 @@ jobs:
   create-release:
     needs: [get-version, build-gcc]
     runs-on: ubuntu-latest
+    if: github.event.inputs.branch == 'main' || github.event.inputs.branch == ''
     permissions:
       contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
