@@ -112,13 +112,35 @@ jobs:
           ZLIB_STATIC=$(find /usr -name "libz.a" 2>/dev/null | head -1)
           ZSTD_STATIC=$(find /usr -name "libzstd.a" 2>/dev/null | head -1)
           
+          echo "Using static libraries:"
+          echo "  zlib: $ZLIB_STATIC"
+          echo "  zstd: $ZSTD_STATIC"
+          
+          # Verify static libraries exist
+          if [ ! -f "$ZLIB_STATIC" ]; then
+            echo "ERROR: Static zlib library not found at $ZLIB_STATIC"
+            exit 1
+          fi
+          if [ ! -f "$ZSTD_STATIC" ]; then
+            echo "ERROR: Static zstd library not found at $ZSTD_STATIC"
+            exit 1
+          fi
+          
+          echo "Static libraries verified successfully"
+          
           # Native build configuration for both architectures
           # Use optimized flags without debug info to reduce binary size
-          # Build static binaries to eliminate glibc runtime dependencies
-          # Force static linking of zlib and zstd by providing explicit library paths
+          # Build static binaries to eliminate runtime dependencies
+          # Force static linking by disabling all shared components and providing explicit library paths
+          
+          # Set PKG_CONFIG_PATH to empty to prevent finding shared libraries via pkg-config
+          export PKG_CONFIG_PATH=""
+          
           CFLAGS="-O2" CXXFLAGS="-O2" \
-          LDFLAGS="-static" \
+          LDFLAGS="-static -L/usr/lib/$(uname -m)-linux-gnu" \
           LIBS="$ZLIB_STATIC $ZSTD_STATIC" \
+          ZLIB_CFLAGS="" ZLIB_LIBS="$ZLIB_STATIC" \
+          ZSTD_CFLAGS="" ZSTD_LIBS="$ZSTD_STATIC" \
           ../binutils-${{ needs.get-version.outputs.exact_version }}/configure \
             --prefix=/opt/binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
             --disable-shared \
@@ -127,13 +149,21 @@ jobs:
             --enable-64-bit-bfd \
             --enable-gold \
             --enable-ld=default \
-            --enable-plugins \
+            --disable-plugins \
             --disable-werror
 
       - name: Build Binutils
         run: |
           cd build-binutils-${{ matrix.arch }}
-          make -j$(nproc)
+          
+          # Find static library paths again for make
+          ZLIB_STATIC=$(find /usr -name "libz.a" 2>/dev/null | head -1)
+          ZSTD_STATIC=$(find /usr -name "libzstd.a" 2>/dev/null | head -1)
+          
+          # Force static linking during make as well
+          make -j$(nproc) \
+            LDFLAGS="-static -L/usr/lib/$(uname -m)-linux-gnu" \
+            LIBS="$ZLIB_STATIC $ZSTD_STATIC"
 
       - name: Install Binutils
         run: |
