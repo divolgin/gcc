@@ -1,0 +1,245 @@
+name: Build GNU Make from Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'GNU Make Version to build'
+        required: true
+        default: '4.4.1'
+        type: choice
+        options:
+          - '4.4.1'
+          - '4.4'
+          - '4.3'
+          - '4.2.1'
+
+env:
+  # Version mappings - will be used to get exact versions
+  MAKE_4_4_1_VERSION: '4.4.1'
+  MAKE_4_4_VERSION: '4.4'
+  MAKE_4_3_VERSION: '4.3'
+  MAKE_4_2_1_VERSION: '4.2.1'
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      exact_version: ${{ steps.set-version.outputs.exact_version }}
+      major_version: ${{ steps.set-version.outputs.major_version }}
+    steps:
+      - name: Set exact version
+        id: set-version
+        run: |
+          case "${{ github.event.inputs.version }}" in
+            "4.4.1")
+              echo "exact_version=${{ env.MAKE_4_4_1_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=4.4.1" >> $GITHUB_OUTPUT
+              ;;
+            "4.4")
+              echo "exact_version=${{ env.MAKE_4_4_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=4.4" >> $GITHUB_OUTPUT
+              ;;
+            "4.3")
+              echo "exact_version=${{ env.MAKE_4_3_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=4.3" >> $GITHUB_OUTPUT
+              ;;
+            "4.2.1")
+              echo "exact_version=${{ env.MAKE_4_2_1_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=4.2.1" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unsupported version: ${{ github.event.inputs.version }}"
+              exit 1
+              ;;
+          esac
+
+  build-make:
+    needs: get-version
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            wget \
+            tar \
+            xz-utils \
+            texinfo \
+            pkg-config
+
+      - name: Download GNU Make source
+        run: |
+          wget -q https://ftp.gnu.org/gnu/make/make-${{ needs.get-version.outputs.exact_version }}.tar.gz
+          tar -xzf make-${{ needs.get-version.outputs.exact_version }}.tar.gz
+
+      - name: Configure build
+        run: |
+          cd make-${{ needs.get-version.outputs.exact_version }}
+          
+          # Native build configuration for both architectures
+          # Use optimized flags without debug info to reduce binary size
+          # Build static binary to eliminate glibc runtime dependencies
+          CFLAGS="-O2 -static" CXXFLAGS="-O2 -static" \
+          LDFLAGS="-static" \
+          ./configure \
+            --prefix=/opt/make-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --disable-dependency-tracking \
+            --disable-nls
+
+      - name: Build GNU Make
+        run: |
+          cd make-${{ needs.get-version.outputs.exact_version }}
+          make -j$(nproc)
+
+      - name: Install GNU Make
+        run: |
+          cd make-${{ needs.get-version.outputs.exact_version }}
+          mkdir -p install-root
+          make install DESTDIR=$PWD/install-root
+          # Strip the binary to reduce size
+          strip install-root/opt/make-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin/make
+
+      - name: Create archive
+        run: |
+          cd make-${{ needs.get-version.outputs.exact_version }}/install-root/opt
+          tar -czf $GITHUB_WORKSPACE/make-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz make-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: make-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          path: make-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [get-version, build-make]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          find artifacts -type f -name "*.tar.gz" | sort
+
+      - name: Delete existing release if it exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if release exists and delete it
+          if gh release view make-${{ needs.get-version.outputs.exact_version }} >/dev/null 2>&1; then
+            echo "Release make-${{ needs.get-version.outputs.exact_version }} exists, deleting..."
+            gh release delete make-${{ needs.get-version.outputs.exact_version }} --yes
+          else
+            echo "Release make-${{ needs.get-version.outputs.exact_version }} does not exist"
+          fi
+
+      - name: Create new release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release
+          gh release create make-${{ needs.get-version.outputs.exact_version }} \
+            --title "GNU Make ${{ needs.get-version.outputs.exact_version }}" \
+            --notes "GNU Make ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
+
+          Built from source with the following configuration:
+          - Tool: GNU Make - controls the generation of executables and other files from source
+          - Architectures: x86_64 (native), aarch64 (native ARM64)
+          - Features: Statically linked, no runtime dependencies
+          - Type: Static build with no glibc runtime dependencies
+          - Build method: Native compilation on respective architectures
+          - Optimization: Stripped static binary for reduced download size
+          - Compatibility: Works on any Linux system with the same architecture
+          
+          ## What is GNU Make?
+          
+          GNU Make is a tool which controls the generation of executables and other non-source files of a program from the program's source files. Make gets its knowledge of how to build your program from a file called the makefile, which lists each of the non-source files and how to compute it from other files.
+          
+          ## Features in This Build
+          
+          **Core Functionality:**
+          - Complete makefile processing and dependency tracking
+          - Parallel job execution (\`-j\` option)
+          - Built-in rules and variables
+          - Pattern rules and automatic variables
+          - Conditional processing and functions
+          - Shell integration and command execution
+          
+          **Advanced Features (version-dependent):**
+          - Job server for coordinating parallel builds
+          - Output synchronization (\`--output-sync\`)
+          - Load average limiting (\`-l\` option)  
+          - Debug and trace capabilities
+          - POSIX compliance mode
+          - Guile scripting support (if available)
+          
+          ## Files
+          - \`make-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: GNU Make build for x86_64 architecture
+          - \`make-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: GNU Make build for aarch64 architecture
+          
+          ## Installation
+          Extract the appropriate archive and add the \`bin\` directory to your PATH:
+          \`\`\`bash
+          tar -xzf make-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          export PATH=\$PWD/make-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          \`\`\`
+          
+          ## Using with GCC and Binutils
+          This GNU Make can be used alongside the GCC and binutils builds from this repository to create a complete development toolchain:
+          
+          \`\`\`bash
+          # Extract all archives
+          tar -xzf make-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          tar -xzf binutils-<version>-<arch>.tar.gz
+          tar -xzf gcc-<version>-<arch>.tar.gz
+          
+          # Set up PATH with all tools
+          export PATH=\$PWD/make-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PWD/binutils-<version>-<arch>/bin:\$PWD/gcc-<version>-<arch>/bin:\$PATH
+          
+          # Now you have a complete GNU toolchain!
+          make --version
+          gcc --version
+          ld --version
+          \`\`\`
+          
+          ## Usage Examples
+          
+          **Basic usage:**
+          \`\`\`bash
+          make                    # Build default target
+          make clean             # Build clean target
+          make -j4               # Build with 4 parallel jobs
+          make VERBOSE=1         # Build with verbose output
+          \`\`\`
+          
+          **Advanced usage:**
+          \`\`\`bash
+          make -f custom.mk      # Use custom makefile
+          make --dry-run         # Show what would be built
+          make --debug           # Show debugging information
+          make --output-sync     # Synchronize output from parallel jobs
+          \`\`\`
+          
+          This static build ensures maximum portability and can be used on any Linux system without worrying about system dependencies or library versions." \
+            artifacts/make-${{ needs.get-version.outputs.exact_version }}-x86_64/make-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/make-${{ needs.get-version.outputs.exact_version }}-aarch64/make-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
