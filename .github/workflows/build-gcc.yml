@@ -326,7 +326,10 @@ jobs:
 
       - name: List artifacts
         run: |
+          echo "=== Artifact directory structure ==="
           find artifacts -type f -name "*.tar.gz" | sort
+          echo "=== Detailed directory listing ==="
+          ls -la artifacts/
 
       - name: Delete existing release if it exists
         env:
@@ -410,4 +413,3 @@ jobs:
             artifacts/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz \
             artifacts/glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-x86_64/glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
             artifacts/glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-aarch64/glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
-            artifacts/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64/gcc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
