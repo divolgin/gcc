@@ -82,6 +82,9 @@ jobs:
 
       - name: Download GNU Make source
         run: |
+          # Try multiple mirrors for reliability
+          wget -q https://mirror.csclub.uwaterloo.ca/gnu/make/make-${{ needs.get-version.outputs.exact_version }}.tar.gz || \
+          wget -q https://mirrors.kernel.org/gnu/make/make-${{ needs.get-version.outputs.exact_version }}.tar.gz || \
           wget -q https://ftp.gnu.org/gnu/make/make-${{ needs.get-version.outputs.exact_version }}.tar.gz
           tar -xzf make-${{ needs.get-version.outputs.exact_version }}.tar.gz
 
