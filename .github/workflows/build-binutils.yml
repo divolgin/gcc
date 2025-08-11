@@ -1,0 +1,241 @@
+name: Build Binutils from Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Binutils Version to build'
+        required: true
+        default: '2.44'
+        type: choice
+        options:
+          - '2.44'
+          - '2.43'
+          - '2.42'
+          - '2.41'
+
+env:
+  # Version mappings - will be used to get exact versions
+  BINUTILS_2_44_VERSION: '2.44'
+  BINUTILS_2_43_VERSION: '2.43'
+  BINUTILS_2_42_VERSION: '2.42'
+  BINUTILS_2_41_VERSION: '2.41'
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      exact_version: ${{ steps.set-version.outputs.exact_version }}
+      major_version: ${{ steps.set-version.outputs.major_version }}
+    steps:
+      - name: Set exact version
+        id: set-version
+        run: |
+          case "${{ github.event.inputs.version }}" in
+            "2.44")
+              echo "exact_version=${{ env.BINUTILS_2_44_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=2.44" >> $GITHUB_OUTPUT
+              ;;
+            "2.43")
+              echo "exact_version=${{ env.BINUTILS_2_43_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=2.43" >> $GITHUB_OUTPUT
+              ;;
+            "2.42")
+              echo "exact_version=${{ env.BINUTILS_2_42_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=2.42" >> $GITHUB_OUTPUT
+              ;;
+            "2.41")
+              echo "exact_version=${{ env.BINUTILS_2_41_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=2.41" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unsupported version: ${{ github.event.inputs.version }}"
+              exit 1
+              ;;
+          esac
+
+  build-binutils:
+    needs: get-version
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            wget \
+            tar \
+            xz-utils \
+            flex \
+            bison \
+            texinfo \
+            zlib1g-dev
+
+      - name: Download Binutils source
+        run: |
+          wget -q https://ftp.gnu.org/gnu/binutils/binutils-${{ needs.get-version.outputs.exact_version }}.tar.xz
+          tar -xf binutils-${{ needs.get-version.outputs.exact_version }}.tar.xz
+
+      - name: Configure build
+        run: |
+          mkdir -p build-binutils-${{ matrix.arch }}
+          cd build-binutils-${{ matrix.arch }}
+          
+          # Native build configuration for both architectures
+          # Use optimized flags without debug info to reduce binary size
+          # Build static binaries to eliminate glibc runtime dependencies
+          CFLAGS="-O2" CXXFLAGS="-O2" \
+          LDFLAGS="-static" \
+          ../binutils-${{ needs.get-version.outputs.exact_version }}/configure \
+            --prefix=/opt/binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --disable-shared \
+            --enable-static \
+            --disable-multilib \
+            --enable-64-bit-bfd \
+            --enable-gold \
+            --enable-ld=default \
+            --enable-plugins \
+            --with-system-zlib \
+            --disable-werror
+
+      - name: Build Binutils
+        run: |
+          cd build-binutils-${{ matrix.arch }}
+          make -j$(nproc)
+
+      - name: Install Binutils
+        run: |
+          cd build-binutils-${{ matrix.arch }}
+          sudo make install-strip DESTDIR=$PWD/install-root
+
+      - name: Create archive
+        run: |
+          cd build-binutils-${{ matrix.arch }}/install-root/opt
+          tar -czf $GITHUB_WORKSPACE/binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          path: binutils-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [get-version, build-binutils]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          find artifacts -type f -name "*.tar.gz" | sort
+
+      - name: Delete existing release if it exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if release exists and delete it
+          if gh release view binutils-${{ needs.get-version.outputs.exact_version }} >/dev/null 2>&1; then
+            echo "Release binutils-${{ needs.get-version.outputs.exact_version }} exists, deleting..."
+            gh release delete binutils-${{ needs.get-version.outputs.exact_version }} --yes
+          else
+            echo "Release binutils-${{ needs.get-version.outputs.exact_version }} does not exist"
+          fi
+
+      - name: Create new release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release
+          gh release create binutils-${{ needs.get-version.outputs.exact_version }} \
+            --title "GNU Binutils ${{ needs.get-version.outputs.exact_version }}" \
+            --notes "GNU Binutils ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
+
+          Built from source with the following configuration:
+          - Tools: as (assembler), ld (linker), gold (alternative linker), ar, ranlib, nm, objdump, objcopy, strip, readelf, addr2line, strings, size, c++filt, and more
+          - Architectures: x86_64 (native), aarch64 (native ARM64)
+          - Features: Static libraries, 64-bit BFD support, Gold linker enabled, Plugin support
+          - Type: Static build with no glibc runtime dependencies
+          - Build method: Native compilation on respective architectures
+          - Optimization: Stripped static binaries for reduced download size
+          
+          ## Tools Included
+          
+          **Core Tools:**
+          - \`as\` - GNU Assembler
+          - \`ld\` - GNU Linker
+          - \`gold\` - Alternative faster ELF-only linker
+          
+          **Archive Management:**
+          - \`ar\` - Create, modify, and extract from archives
+          - \`ranlib\` - Generate index to archive contents
+          
+          **Binary Inspection:**
+          - \`nm\` - List symbols from object files
+          - \`objdump\` - Display information from object files (disassembler, headers)
+          - \`readelf\` - Display information from ELF format files
+          - \`size\` - List section sizes and total size
+          - \`strings\` - List printable strings from files
+          - \`addr2line\` - Convert addresses to filenames and line numbers
+          
+          **Binary Manipulation:**
+          - \`objcopy\` - Copy and translate object files
+          - \`strip\` - Remove symbols and debug information
+          - \`elfedit\` - Modify ELF format files
+          
+          **Development Support:**
+          - \`c++filt\` - Demangle encoded C++ symbols
+          - \`gprof\` - Display profiling information
+          - \`gprofng\` - Modern performance analysis tool
+          
+          **Libraries:**
+          - \`libbfd\` - Binary File Descriptor library
+          - \`libopcodes\` - Assembling/disassembling library
+          - \`libctf\` - CTF debug format library
+          - \`libsframe\` - SFRAME debug format library
+          
+          ## Files
+          - \`binutils-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: Binutils build for x86_64 architecture
+          - \`binutils-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: Binutils build for aarch64 architecture
+          
+          ## Installation
+          Extract the appropriate archive and add the \`bin\` directory to your PATH:
+          \`\`\`bash
+          tar -xzf binutils-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          export PATH=\$PWD/binutils-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          \`\`\`
+          
+          ## Using with GCC
+          These binutils can be used alongside the GCC builds from this repository to create a complete GNU toolchain:
+          1. Extract both GCC and binutils archives
+          2. Add both \`bin\` directories to your PATH (binutils first for precedence)
+          3. The GCC compiler will automatically use the binutils tools
+          
+          \`\`\`bash
+          # Extract both archives
+          tar -xzf binutils-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          tar -xzf gcc-<version>-<arch>.tar.gz
+          
+          # Set up PATH with binutils first
+          export PATH=\$PWD/binutils-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PWD/gcc-<version>-<arch>/bin:\$PATH
+          \`\`\`" \
+            artifacts/binutils-${{ needs.get-version.outputs.exact_version }}-x86_64/binutils-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/binutils-${{ needs.get-version.outputs.exact_version }}-aarch64/binutils-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
