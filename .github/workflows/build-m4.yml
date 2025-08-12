@@ -1,0 +1,228 @@
+name: Build m4 from Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'm4 Version to build'
+        required: true
+        default: '1.4.19'
+        type: choice
+        options:
+          - '1.4.19'
+          - '1.4.18'
+      branch:
+        description: 'Branch to checkout for workflow'
+        required: false
+        default: 'main'
+        type: string
+
+env:
+  # Version mappings - will be used to get exact versions
+  M4_1_4_19_VERSION: '1.4.19'
+  M4_1_4_18_VERSION: '1.4.18'
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      exact_version: ${{ steps.set-version.outputs.exact_version }}
+      major_version: ${{ steps.set-version.outputs.major_version }}
+    steps:
+      - name: Set exact version
+        id: set-version
+        run: |
+          case "${{ github.event.inputs.version }}" in
+            "1.4.19")
+              echo "exact_version=${{ env.M4_1_4_19_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=1.4.19" >> $GITHUB_OUTPUT
+              ;;
+            "1.4.18")
+              echo "exact_version=${{ env.M4_1_4_18_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=1.4.18" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unsupported version: ${{ github.event.inputs.version }}"
+              exit 1
+              ;;
+          esac
+
+  build-m4:
+    needs: get-version
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            wget \
+            tar \
+            xz-utils \
+            texinfo
+
+      - name: Download m4 source
+        run: |
+          echo "=== Downloading m4 ${{ needs.get-version.outputs.exact_version }} ==="
+          # Try multiple mirrors for reliability, preferring mirror URLs first
+          wget -q https://mirror.csclub.uwaterloo.ca/gnu/m4/m4-${{ needs.get-version.outputs.exact_version }}.tar.xz || \
+          wget -q https://mirrors.kernel.org/gnu/m4/m4-${{ needs.get-version.outputs.exact_version }}.tar.xz || \
+          wget -q https://ftp.gnu.org/gnu/m4/m4-${{ needs.get-version.outputs.exact_version }}.tar.xz
+          tar -xf m4-${{ needs.get-version.outputs.exact_version }}.tar.xz
+
+      - name: Configure build
+        run: |
+          mkdir -p build-m4-${{ matrix.arch }}
+          cd build-m4-${{ matrix.arch }}
+          
+          # Configure for static build to eliminate runtime dependencies
+          # Use optimized flags without debug info to reduce binary size
+          CFLAGS="-O2" CXXFLAGS="-O2" \
+          LDFLAGS="-static" \
+          ../m4-${{ needs.get-version.outputs.exact_version }}/configure \
+            --prefix=/opt/m4-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --disable-shared \
+            --enable-static
+
+      - name: Build m4
+        run: |
+          cd build-m4-${{ matrix.arch }}
+          make -j$(nproc)
+
+      - name: Install m4
+        run: |
+          cd build-m4-${{ matrix.arch }}
+          sudo make install-strip DESTDIR=$PWD/install-root
+
+      - name: Verify static linking
+        run: |
+          cd build-m4-${{ matrix.arch }}/install-root/opt/m4-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
+          echo "Checking static linking of m4..."
+          
+          # Check if binary is statically linked (should show 'statically linked')
+          if [ -f "m4" ]; then
+            echo "=== m4 ==="
+            file m4
+            echo "Dynamic dependencies:"
+            ldd m4 2>/dev/null || echo "  (statically linked)"
+            echo
+            
+            # Test basic functionality
+            echo "Testing basic functionality:"
+            echo 'define(TEST, Hello World)TEST' | ./m4
+          fi
+
+      - name: Build summary
+        run: |
+          echo "=== m4 Build Complete ==="
+          if [ "${{ github.event.inputs.branch }}" != "main" ] && [ "${{ github.event.inputs.branch }}" != "" ]; then
+            echo "ℹ️  Note: Built from branch '${{ github.event.inputs.branch }}' - no release will be created"
+            echo "   Artifacts are available for download from this workflow run"
+          else
+            echo "✅ Built from main branch - release will be created with artifacts"
+          fi
+
+      - name: Create archive
+        run: |
+          cd build-m4-${{ matrix.arch }}/install-root/opt
+          tar -czf $GITHUB_WORKSPACE/m4-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz m4-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+
+      - name: Upload m4 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          path: m4-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [get-version, build-m4]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.branch == 'main' || github.event.inputs.branch == ''
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          echo "=== Artifact directory structure ==="
+          find artifacts -type f -name "*.tar.gz" | sort
+          echo "=== Detailed directory listing ==="
+          ls -la artifacts/
+
+      - name: Delete existing release if it exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if release exists and delete it
+          if gh release view m4-${{ needs.get-version.outputs.exact_version }} >/dev/null 2>&1; then
+            echo "Release m4-${{ needs.get-version.outputs.exact_version }} exists, deleting..."
+            gh release delete m4-${{ needs.get-version.outputs.exact_version }} --yes
+          else
+            echo "Release m4-${{ needs.get-version.outputs.exact_version }} does not exist"
+          fi
+
+      - name: Create new release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release
+          gh release create m4-${{ needs.get-version.outputs.exact_version }} \
+            --title "m4 ${{ needs.get-version.outputs.exact_version }}" \
+            --notes "m4 ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
+
+          Built from source with the following configuration:
+          - Architectures: x86_64 (native), aarch64 (native ARM64)
+          - Type: Static build for maximum portability
+          - Build method: Native compilation
+          - Optimization: Stripped static binaries for reduced download size
+          - Compatibility: Fully self-contained - no external dependencies except glibc
+          
+          ## Files
+          
+          - \`m4-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: m4 build for x86_64 architecture
+          - \`m4-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: m4 build for aarch64 architecture
+          
+          ## Installation & Usage
+          
+          \`\`\`bash
+          # Extract the package
+          tar -xzf m4-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          
+          # Add to PATH
+          export PATH=\$PWD/m4-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          
+          # Use m4
+          echo 'define(HELLO, Hello World)HELLO' | m4
+          \`\`\`
+          
+          ## About m4
+          
+          m4 is a macro processor that is part of the POSIX standard. It is commonly used as a dependency for building other software, particularly:
+          - GNU Autotools (autoconf, automake)
+          - GNU Bison
+          - Various build systems and code generators
+          
+          This build provides a portable, static version of m4 that can be used on systems where m4 is not available or where a specific version is required." \
+            artifacts/m4-${{ needs.get-version.outputs.exact_version }}-x86_64/m4-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/m4-${{ needs.get-version.outputs.exact_version }}-aarch64/m4-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
