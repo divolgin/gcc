@@ -167,20 +167,60 @@ jobs:
             find /usr/lib -name "crt*.o" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
           fi
           
-          # Copy essential glibc libraries (both static and dynamic)
+          # Copy essential glibc libraries (both static and dynamic with all versions)
           echo "Copying glibc libraries..."
-          for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 libresolv.so.2 librt.so.1 libutil.so.1; do
-            find /lib /usr/lib -name "$lib" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          
+          # Core glibc shared libraries - copy all versions and symlinks
+          for lib_pattern in "libc.so*" "libm.so*" "libpthread.so*" "libdl.so*" "libresolv.so*" "librt.so*" "libutil.so*"; do
+            find /lib /usr/lib "$SYSTEM_LIB_DIR" -name "$lib_pattern" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
           done
           
-          # Copy static libraries if available
-          for lib in libc.a libm.a libpthread.a libdl.a libresolv.a librt.a libutil.a; do
-            find /usr/lib -name "$lib" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          # Additional essential shared libraries
+          for lib_pattern in "libcrypt.so*" "libnss_*.so*" "libBrokenLocale.so*" "libanl.so*" "libmvec.so*"; do
+            find /lib /usr/lib "$SYSTEM_LIB_DIR" -name "$lib_pattern" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
           done
           
-          # Copy dynamic linker
-          find /lib /lib64 -name "ld-linux*.so*" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
-          find /lib /lib64 -name "ld.so.1" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          # Copy static libraries (including version-specific ones)
+          echo "Copying static libraries..."
+          for lib_pattern in "libc.a" "libc-*.a" "libc_nonshared.a" "libm.a" "libm-*.a" "libmvec.a" \
+                             "libpthread.a" "libdl.a" "libresolv.a" "librt.a" "libutil.a" \
+                             "libcrypt.a" "libnss_*.a" "libBrokenLocale.a" "libanl.a"; do
+            find /usr/lib "$SYSTEM_LIB_DIR" -name "$lib_pattern" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          done
+          
+          # Copy GCC runtime libraries if available
+          echo "Copying GCC runtime libraries..."
+          for lib_pattern in "libgcc_s.so*" "libstdc++.so*" "libstdc++.a" "libgfortran.so*" "libgfortran.a" \
+                             "libgomp.so*" "libgomp.a" "libquadmath.so*" "libquadmath.a"; do
+            find /usr/lib "$SYSTEM_LIB_DIR" -name "$lib_pattern" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          done
+          
+          # Copy dynamic linker and all its symlinks
+          echo "Copying dynamic linker..."
+          find /lib /lib64 -name "ld-linux*.so*" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          find /lib /lib64 -name "ld.so.1" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          find /lib /lib64 -name "ld64.so.1" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          
+          # Show space usage analysis before copying headers
+          echo "=== Space Usage Analysis ==="
+          
+          # Analyze source directories
+          echo "Source directory sizes:"
+          echo "  /usr/include: $(du -sh /usr/include 2>/dev/null | cut -f1 || echo 'N/A')"
+          echo "  /usr/include/$MULTIARCH_DIR: $(du -sh /usr/include/$MULTIARCH_DIR 2>/dev/null | cut -f1 || echo 'N/A')"
+          echo "  /lib: $(du -sh /lib 2>/dev/null | cut -f1 || echo 'N/A')"
+          echo "  /usr/lib: $(du -sh /usr/lib 2>/dev/null | cut -f1 || echo 'N/A')"
+          echo "  /usr/lib/$MULTIARCH_DIR: $(du -sh /usr/lib/$MULTIARCH_DIR 2>/dev/null | cut -f1 || echo 'N/A')"
+          
+          # Show current sysroot size
+          CURRENT_SIZE=$(du -sh "$SYSROOT_DIR" 2>/dev/null | cut -f1 || echo '0')
+          echo "Current sysroot size: $CURRENT_SIZE"
+          
+          # Count files in source directories
+          echo "File counts in source directories:"
+          echo "  /usr/include files: $(find /usr/include -type f 2>/dev/null | wc -l || echo '0')"
+          echo "  /lib library files: $(find /lib -name '*.so*' -o -name '*.a' 2>/dev/null | wc -l || echo '0')"
+          echo "  /usr/lib library files: $(find /usr/lib -name '*.so*' -o -name '*.a' 2>/dev/null | wc -l || echo '0')"
           
           # Copy system headers
           echo "Copying system headers..."
@@ -245,10 +285,10 @@ jobs:
           echo "=== Sysroot Contents ==="
           echo "Runtime objects:"
           ls -la "$SYSROOT_DIR/lib/" | grep "crt" || echo "No CRT files found"
-          echo "Libraries (first 10):"
-          ls -la "$SYSROOT_DIR/lib/" | head -10
-          echo "Headers (first 10):"
-          ls -la "$SYSROOT_DIR/usr/include/" | head -10
+          echo "All library files:"
+          ls -la "$SYSROOT_DIR/lib/"
+          echo "All header files:"
+          ls -la "$SYSROOT_DIR/usr/include/"
           
           # Check for critical headers
           echo "=== Critical Headers Check ==="
@@ -260,8 +300,91 @@ jobs:
             fi
           done
           
+          # Check for critical libraries
+          echo "=== Critical Libraries Check ==="
+          
+          # Check static libraries
+          echo "Static libraries:"
+          for lib in "libc.a" "libm.a" "libmvec.a" "libc_nonshared.a"; do
+            if find "$SYSROOT_DIR/lib/" -name "$lib" | grep -q .; then
+              echo "✅ Found $lib"
+            else
+              echo "❌ Missing $lib"
+            fi
+          done
+          
+          # Check shared libraries and symlinks
+          echo "Shared libraries:"
+          for lib in "libc.so.6" "libm.so.6" "libmvec.so.1" "ld-linux*.so*"; do
+            if find "$SYSROOT_DIR/lib/" -name "$lib" | grep -q .; then
+              echo "✅ Found $lib"
+            else
+              echo "❌ Missing $lib"
+            fi
+          done
+          
+          # Check for version-specific files
+          echo "Version-specific files:"
+          VERSION_SPECIFIC_COUNT=$(find "$SYSROOT_DIR/lib/" -name "*-[0-9]*.[0-9]*.so" -o -name "*-[0-9]*.[0-9]*.a" | wc -l)
+          echo "Found $VERSION_SPECIFIC_COUNT version-specific library files"
+          
+          # Check for symlinks
+          echo "Symlinks:"
+          SYMLINK_COUNT=$(find "$SYSROOT_DIR/lib/" -type l | wc -l)
+          echo "Found $SYMLINK_COUNT symlinks"
+          if [ "$SYMLINK_COUNT" -gt 0 ]; then
+            echo "All symlinks:"
+            find "$SYSROOT_DIR/lib/" -type l | while read link; do
+              echo "  $(basename "$link") -> $(readlink "$link")"
+            done
+          fi
+          
+          # Final space usage analysis
+          echo "=== Final Sysroot Analysis ==="
+          FINAL_SIZE=$(du -sh "$SYSROOT_DIR" 2>/dev/null | cut -f1 || echo '0')
+          FINAL_SIZE_BYTES=$(du -sb "$SYSROOT_DIR" 2>/dev/null | cut -f1 || echo '0')
+          echo "Final sysroot size: $FINAL_SIZE ($FINAL_SIZE_BYTES bytes)"
+          
+          echo "Breakdown by directory:"
+          echo "  lib/: $(du -sh "$SYSROOT_DIR/lib" 2>/dev/null | cut -f1 || echo '0')"
+          echo "  usr/include/: $(du -sh "$SYSROOT_DIR/usr/include" 2>/dev/null | cut -f1 || echo '0')"
+          echo "  usr/lib/: $(du -sh "$SYSROOT_DIR/usr/lib" 2>/dev/null | cut -f1 || echo '0')"
+          
+          echo "File counts in sysroot:"
+          echo "  Total files: $(find "$SYSROOT_DIR" -type f 2>/dev/null | wc -l || echo '0')"
+          echo "  Library files (.so/.a): $(find "$SYSROOT_DIR" -name '*.so*' -o -name '*.a' 2>/dev/null | wc -l || echo '0')"
+          echo "  Header files (.h): $(find "$SYSROOT_DIR" -name '*.h' 2>/dev/null | wc -l || echo '0')"
+          echo "  Symlinks: $(find "$SYSROOT_DIR" -type l 2>/dev/null | wc -l || echo '0')"
+          
+          # Estimate what full directory inclusion would cost
+          echo "=== Full Directory Inclusion Analysis ==="
+          echo "If we included entire directories, additional space would be:"
+          
+          # Calculate what we'd get by including all of /lib
+          ALL_LIB_SIZE=$(find /lib -name '*.so*' -o -name '*.a' -o -name 'ld*' 2>/dev/null | xargs du -sc 2>/dev/null | tail -1 | cut -f1 || echo '0')
+          CURRENT_LIB_SIZE=$(find "$SYSROOT_DIR/lib" -type f 2>/dev/null | xargs du -sc 2>/dev/null | tail -1 | cut -f1 || echo '0')
+          ADDITIONAL_LIB=$((ALL_LIB_SIZE - CURRENT_LIB_SIZE))
+          echo "  All /lib libraries: +$(numfmt --to=iec $((ADDITIONAL_LIB * 1024)) 2>/dev/null || echo "${ADDITIONAL_LIB}K")"
+          
+          # Calculate what we'd get by including all of /usr/lib/$MULTIARCH_DIR
+          if [ -d "/usr/lib/$MULTIARCH_DIR" ]; then
+            ALL_MULTIARCH_SIZE=$(find "/usr/lib/$MULTIARCH_DIR" -name '*.so*' -o -name '*.a' 2>/dev/null | xargs du -sc 2>/dev/null | tail -1 | cut -f1 || echo '0')
+            echo "  All /usr/lib/$MULTIARCH_DIR libraries: $(numfmt --to=iec $((ALL_MULTIARCH_SIZE * 1024)) 2>/dev/null || echo "${ALL_MULTIARCH_SIZE}K")"
+          fi
+          
+          # Show compression ratio estimate
+          echo "=== Compression Analysis ==="
+          echo "Uncompressed sysroot: $FINAL_SIZE"
+          
           # Create sysroot archive
           tar -czf "glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz" "$SYSROOT_DIR"
+          
+          # Show compressed size
+          COMPRESSED_SIZE=$(ls -lh "glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz" | awk '{print $5}')
+          COMPRESSED_BYTES=$(ls -l "glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz" | awk '{print $5}')
+          COMPRESSION_RATIO=$(echo "scale=1; $COMPRESSED_BYTES * 100 / $FINAL_SIZE_BYTES" | bc -l 2>/dev/null || echo "N/A")
+          
+          echo "Compressed size: $COMPRESSED_SIZE (${COMPRESSION_RATIO}% of original)"
           echo "✅ Created glibc-sysroot-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz"
 
       - name: Verify static linking
