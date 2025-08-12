@@ -188,6 +188,16 @@ jobs:
             find /usr/lib "$SYSTEM_LIB_DIR" -name "$lib_pattern" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
           done
           
+          # Copy architecture-specific libraries that may not be found by general patterns
+          echo "Copying architecture-specific libraries..."
+          
+          # Try to find libmvec more aggressively (seems to be missing on aarch64)
+          find /usr/lib /lib "$SYSTEM_LIB_DIR" -name "libmvec*" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          
+          # Copy all version-specific library files (e.g., libm-2.35.a)
+          find /usr/lib "$SYSTEM_LIB_DIR" -name "*-[0-9]*.[0-9]*.a" -exec cp {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          find /usr/lib "$SYSTEM_LIB_DIR" -name "*-[0-9]*.[0-9]*.so*" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          
           # Copy GCC runtime libraries if available
           echo "Copying GCC runtime libraries..."
           for lib_pattern in "libgcc_s.so*" "libstdc++.so*" "libstdc++.a" "libgfortran.so*" "libgfortran.a" \
@@ -200,6 +210,13 @@ jobs:
           find /lib /lib64 -name "ld-linux*.so*" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
           find /lib /lib64 -name "ld.so.1" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
           find /lib /lib64 -name "ld64.so.1" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          
+          # Architecture-specific dynamic linker patterns
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            find /lib* -name "ld-linux-x86-64.so*" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          elif [ "${{ matrix.arch }}" = "aarch64" ]; then
+            find /lib* -name "ld-linux-aarch64.so*" -exec cp -P {} "$SYSROOT_DIR/lib/" \; 2>/dev/null || true
+          fi
           
           # Show space usage analysis before copying headers
           echo "=== Space Usage Analysis ==="
@@ -305,7 +322,7 @@ jobs:
           
           # Check static libraries
           echo "Static libraries:"
-          for lib in "libc.a" "libm.a" "libmvec.a" "libc_nonshared.a"; do
+          for lib in "libc.a" "libm.a" "libc_nonshared.a"; do
             if find "$SYSROOT_DIR/lib/" -name "$lib" | grep -q .; then
               echo "✅ Found $lib"
             else
@@ -313,15 +330,49 @@ jobs:
             fi
           done
           
+          # Check architecture-specific libraries
+          echo "Architecture-specific libraries:"
+          if find "$SYSROOT_DIR/lib/" -name "libmvec*" | grep -q .; then
+            echo "✅ Found libmvec ($(find "$SYSROOT_DIR/lib/" -name "libmvec*" | wc -l) files)"
+          else
+            echo "❌ Missing libmvec (may not be available on ${{ matrix.arch }})"
+          fi
+          
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            if find "$SYSROOT_DIR/lib/" -name "libquadmath*" | grep -q .; then
+              echo "✅ Found libquadmath (x86_64 specific)"
+            else
+              echo "❌ Missing libquadmath (x86_64 specific)"
+            fi
+          else
+            echo "ℹ️  libquadmath not expected on ${{ matrix.arch }}"
+          fi
+          
           # Check shared libraries and symlinks
           echo "Shared libraries:"
-          for lib in "libc.so.6" "libm.so.6" "libmvec.so.1" "ld-linux*.so*"; do
+          for lib in "libc.so.6" "libm.so.6"; do
             if find "$SYSROOT_DIR/lib/" -name "$lib" | grep -q .; then
               echo "✅ Found $lib"
             else
               echo "❌ Missing $lib"
             fi
           done
+          
+          # Check dynamic linker
+          echo "Dynamic linker:"
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            if find "$SYSROOT_DIR/lib/" -name "ld-linux-x86-64.so*" | grep -q .; then
+              echo "✅ Found ld-linux-x86-64.so*"
+            else
+              echo "❌ Missing ld-linux-x86-64.so*"
+            fi
+          elif [ "${{ matrix.arch }}" = "aarch64" ]; then
+            if find "$SYSROOT_DIR/lib/" -name "ld-linux-aarch64.so*" | grep -q .; then
+              echo "✅ Found ld-linux-aarch64.so*"
+            else
+              echo "❌ Missing ld-linux-aarch64.so*"
+            fi
+          fi
           
           # Check for version-specific files
           echo "Version-specific files:"
