@@ -259,6 +259,53 @@ jobs:
             ln -sf lib "$SYSROOT_DIR/lib64"
           fi
           
+          # Fix absolute symlinks to be relative within sysroot
+          echo "Fixing absolute symlinks..."
+          find "$SYSROOT_DIR" -type l | while read -r symlink; do
+            target=$(readlink "$symlink")
+            
+            # Only process absolute symlinks
+            if [[ "$target" = /* ]]; then
+              symlink_dir=$(dirname "$symlink")
+              symlink_name=$(basename "$symlink")
+              
+              echo "Processing absolute symlink: $symlink_name -> $target"
+              
+              # Check if target exists in our sysroot
+              target_basename=$(basename "$target")
+              sysroot_target=""
+              
+              # Look for the target file in our sysroot
+              if [ -f "$SYSROOT_DIR/lib/$target_basename" ]; then
+                sysroot_target="$SYSROOT_DIR/lib/$target_basename"
+              elif [ -f "$SYSROOT_DIR/usr/lib/$target_basename" ]; then
+                sysroot_target="$SYSROOT_DIR/usr/lib/$target_basename"
+              fi
+              
+              if [ -n "$sysroot_target" ]; then
+                # Calculate relative path from symlink to target
+                rel_path=$(realpath --relative-to="$symlink_dir" "$sysroot_target")
+                
+                echo "  Updating: $symlink_name -> $rel_path"
+                rm "$symlink"
+                ln -sf "$rel_path" "$symlink"
+              else
+                echo "  Warning: Target $target_basename not found in sysroot"
+                
+                # Option: Copy the target file if it exists on the system
+                if [ -f "$target" ]; then
+                  echo "  Copying target file: $target -> $SYSROOT_DIR/lib/$target_basename"
+                  cp -P "$target" "$SYSROOT_DIR/lib/$target_basename"
+                  rm "$symlink"
+                  ln -sf "$target_basename" "$symlink"
+                else
+                  echo "  Target file $target does not exist on system, removing broken symlink"
+                  rm "$symlink"
+                fi
+              fi
+            fi
+          done
+          
           # Create usage documentation
           cat > "$SYSROOT_DIR/README.md" << 'EOF'
           # glibc Sysroot Package
@@ -388,6 +435,25 @@ jobs:
             find "$SYSROOT_DIR/lib/" -type l | while read link; do
               echo "  $(basename "$link") -> $(readlink "$link")"
             done
+            
+            # Check for remaining absolute symlinks
+            echo "Symlink analysis:"
+            ABSOLUTE_LINKS=$(find "$SYSROOT_DIR" -type l -exec readlink {} \; | grep "^/" | wc -l)
+            RELATIVE_LINKS=$(find "$SYSROOT_DIR" -type l -exec readlink {} \; | grep -v "^/" | wc -l)
+            echo "  Relative symlinks: $RELATIVE_LINKS"
+            echo "  Absolute symlinks: $ABSOLUTE_LINKS"
+            
+            if [ "$ABSOLUTE_LINKS" -gt 0 ]; then
+              echo "  Warning: Some absolute symlinks remain:"
+              find "$SYSROOT_DIR" -type l | while read link; do
+                target=$(readlink "$link")
+                if [[ "$target" = /* ]]; then
+                  echo "    $(basename "$link") -> $target"
+                fi
+              done
+            else
+              echo "  ✅ All symlinks are now relative"
+            fi
           fi
           
           # Final space usage analysis
