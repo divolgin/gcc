@@ -97,9 +97,12 @@ jobs:
           sed -i 's/.*CONFIG_FEATURE_SH_STANDALONE.*/CONFIG_FEATURE_SH_STANDALONE=y/' .config
           sed -i 's/.*CONFIG_FEATURE_PREFER_APPLETS.*/CONFIG_FEATURE_PREFER_APPLETS=y/' .config
           
+          # Apply configuration changes non-interactively
+          yes '' | make oldconfig
+          
           # Show final configuration
           echo "=== Final BusyBox Configuration ==="
-          grep -E "CONFIG_STATIC|CONFIG_FEATURE_" .config | head -20
+          grep -E "CONFIG_STATIC|CONFIG_FEATURE_" .config
           
           # Verify static linking is enabled
           if grep -q "CONFIG_STATIC=y" .config; then
