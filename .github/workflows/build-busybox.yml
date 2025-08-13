@@ -127,13 +127,22 @@ jobs:
           # Install BusyBox using make install
           make install CONFIG_PREFIX=$PWD/install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
           
+          # Move everything from bin to usr/bin
+          mkdir -p install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/usr/bin
+          mv install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin/* install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/usr/bin/
+          rmdir install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
+          
+          # Create bin as a symlink to usr/bin
+          cd install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          ln -s usr/bin bin
+          
           # Strip the binary to reduce size
-          strip install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin/busybox
+          strip usr/bin/busybox
           
           # Show what was installed
           echo "=== Installed files ==="
           find install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} -type f -o -type l | sort
-          echo "Total applets installed: $(find install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin -type l | wc -l)"
+          echo "Total applets installed: $(find install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/usr/bin -type l | wc -l)"
 
       - name: Verify static linking and functionality
         run: |
@@ -141,33 +150,38 @@ jobs:
           echo "Checking static linking of BusyBox..."
           
           echo "=== busybox ==="
-          file bin/busybox
+          file usr/bin/busybox
           echo "Dynamic dependencies:"
-          ldd bin/busybox 2>/dev/null || echo "  (statically linked)"
+          ldd usr/bin/busybox 2>/dev/null || echo "  (statically linked)"
           echo
           
           # Test basic functionality
           echo "Testing basic functionality:"
           echo "BusyBox version:"
-          ./bin/busybox
+          ./usr/bin/busybox
           echo
           echo "Available applets:"
-          ./bin/busybox --list
+          ./usr/bin/busybox --list
           echo
           
           # Test a few common commands
           echo "Testing common commands:"
-          echo "echo test: $(./bin/busybox echo "Hello World")"
-          echo "date: $(./bin/busybox date)"
-          echo "uname: $(./bin/busybox uname -a)"
+          echo "echo test: $(./usr/bin/busybox echo "Hello World")"
+          echo "date: $(./usr/bin/busybox date)"
+          echo "uname: $(./usr/bin/busybox uname -a)"
           
-          # Test symlinked applets
+          # Test symlinked applets (via bin symlink)
           echo "Testing symlinked applets:"
           echo "ls test: $(./bin/ls -la . | wc -l) files/directories"
           echo "echo via symlink: $(./bin/echo "Hello from symlink")"
           
+          # Verify bin symlink works
+          echo "Verifying bin symlink:"
+          echo "bin is a symlink to: $(readlink bin)"
+          echo "bin/busybox works: $(./bin/busybox echo "symlink works")"
+          
           # Check binary size
-          echo "Binary size: $(ls -lh bin/busybox | awk '{print $5}')"
+          echo "Binary size: $(ls -lh usr/bin/busybox | awk '{print $5}')"
 
       - name: Create archive
         run: |
@@ -264,11 +278,12 @@ jobs:
           tar -xzf busybox-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
           
           # Use BusyBox directly
-          ./busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox ls -la
-          ./busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox echo \"Hello World\"
+          ./busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/usr/bin/busybox ls -la
+          ./busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/usr/bin/busybox echo \"Hello World\"
           
-          # Or use individual applets
-          export PATH=\$PWD/busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          # Or use individual applets (via usr/bin or bin symlink)
+          export PATH=\$PWD/busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/usr/bin:\$PATH
+          # Or alternatively: export PATH=\$PWD/busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
           ls -la
           echo \"Hello World\"
           grep pattern file.txt
@@ -277,10 +292,10 @@ jobs:
           ### System Installation
           \`\`\`bash
           # Copy the binary to a system location
-          sudo cp busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox /usr/local/bin/
+          sudo cp busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/usr/bin/busybox /usr/local/bin/
           
           # Copy all applet symlinks
-          sudo cp -r busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/bin/* /usr/local/bin/
+          sudo cp -r busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/usr/bin/* /usr/local/bin/
           
           # Now use commands directly
           ls -la
@@ -292,8 +307,8 @@ jobs:
           Perfect for containers, embedded systems, or rescue environments:
           \`\`\`bash
           # Copy everything to system locations
-          sudo cp busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox /usr/local/bin/
-          sudo cp -r busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/bin/* /usr/local/bin/
+          sudo cp busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/usr/bin/busybox /usr/local/bin/
+          sudo cp -r busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/usr/bin/* /usr/local/bin/
           
           # Or manually create specific symlinks
           cd /usr/local/bin
