@@ -120,20 +120,27 @@ jobs:
           # Use LDFLAGS to ensure static linking
           make -j$(nproc) LDFLAGS="-static"
 
-      - name: Install BusyBox
+      - name: Prepare BusyBox binary and applets
         run: |
           cd busybox-${{ needs.get-version.outputs.exact_version }}
           
-          # Install BusyBox using make install
-          make install CONFIG_PREFIX=$PWD/install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          # Create install directory structure
+          mkdir -p install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
+          
+          # Copy the main busybox binary
+          cp busybox install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/
           
           # Strip the binary to reduce size
-          strip install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin/busybox
+          strip install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/busybox
+          
+          # Install all applets as symlinks using busybox install
+          cd install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          ./busybox --install bin/
           
           # Show what was installed
-          echo "=== Installed files ==="
-          find install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} -type f -o -type l | sort
-          echo "Total applets installed: $(find install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin -type l | wc -l)"
+          echo "=== Installed applets ==="
+          ls -la bin/
+          echo "Total applets installed: $(ls bin/ | wc -l)"
 
       - name: Verify static linking and functionality
         run: |
@@ -141,33 +148,28 @@ jobs:
           echo "Checking static linking of BusyBox..."
           
           echo "=== busybox ==="
-          file bin/busybox
+          file busybox
           echo "Dynamic dependencies:"
-          ldd bin/busybox 2>/dev/null || echo "  (statically linked)"
+          ldd busybox 2>/dev/null || echo "  (statically linked)"
           echo
           
           # Test basic functionality
           echo "Testing basic functionality:"
           echo "BusyBox version:"
-          ./bin/busybox
+          ./busybox
           echo
           echo "Available applets:"
-          ./bin/busybox --list
+          ./busybox --list
           echo
           
           # Test a few common commands
           echo "Testing common commands:"
-          echo "echo test: $(./bin/busybox echo "Hello World")"
-          echo "date: $(./bin/busybox date)"
-          echo "uname: $(./bin/busybox uname -a)"
-          
-          # Test symlinked applets
-          echo "Testing symlinked applets:"
-          echo "ls test: $(./bin/ls -la . | wc -l) files/directories"
-          echo "echo via symlink: $(./bin/echo "Hello from symlink")"
+          echo "echo test: $(./busybox echo "Hello World")"
+          echo "date: $(./busybox date)"
+          echo "uname: $(./busybox uname -a)"
           
           # Check binary size
-          echo "Binary size: $(ls -lh bin/busybox | awk '{print $5}')"
+          echo "Binary size: $(ls -lh busybox | awk '{print $5}')"
 
       - name: Create archive
         run: |
