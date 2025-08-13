@@ -120,18 +120,27 @@ jobs:
           # Use LDFLAGS to ensure static linking
           make -j$(nproc) LDFLAGS="-static"
 
-      - name: Prepare BusyBox binary
+      - name: Prepare BusyBox binary and applets
         run: |
           cd busybox-${{ needs.get-version.outputs.exact_version }}
           
-          # Create simple install directory structure
-          mkdir -p install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          # Create install directory structure
+          mkdir -p install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
           
           # Copy the main busybox binary
           cp busybox install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/
           
           # Strip the binary to reduce size
           strip install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/busybox
+          
+          # Install all applets as symlinks using busybox install
+          cd install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          ./busybox --install bin/
+          
+          # Show what was installed
+          echo "=== Installed applets ==="
+          ls -la bin/
+          echo "Total applets installed: $(ls bin/ | wc -l)"
 
       - name: Verify static linking and functionality
         run: |
@@ -259,6 +268,12 @@ jobs:
           # Use BusyBox directly
           ./busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox ls -la
           ./busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox echo \"Hello World\"
+          
+          # Or use individual applets
+          export PATH=\$PWD/busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          ls -la
+          echo \"Hello World\"
+          grep pattern file.txt
           \`\`\`
           
           ### System Installation
@@ -266,18 +281,23 @@ jobs:
           # Copy the binary to a system location
           sudo cp busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox /usr/local/bin/
           
-          # Use it directly
-          busybox ls -la
-          busybox echo \"Hello World\"
+          # Copy all applet symlinks
+          sudo cp -r busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/bin/* /usr/local/bin/
+          
+          # Now use commands directly
+          ls -la
+          echo \"Hello World\"
+          wget https://example.com/file
           \`\`\`
           
           ### Container/Minimal System Usage
           Perfect for containers, embedded systems, or rescue environments:
           \`\`\`bash
-          # Copy just the busybox binary
-          cp busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox /usr/local/bin/
+          # Copy everything to system locations
+          sudo cp busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox /usr/local/bin/
+          sudo cp -r busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/bin/* /usr/local/bin/
           
-          # Create symlinks for common commands
+          # Or manually create specific symlinks
           cd /usr/local/bin
           for cmd in ls cp mv rm mkdir cat grep sed awk sh; do
             ln -sf busybox \$cmd
