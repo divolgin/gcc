@@ -176,6 +176,7 @@ jobs:
   create-release:
     needs: [get-version, build-busybox]
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
