@@ -1,0 +1,338 @@
+name: Build BusyBox from Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'BusyBox Version to build'
+        required: true
+        default: '1.37.0'
+        type: choice
+        options:
+          - '1.37.0'
+          - '1.36.1'
+
+env:
+  # Version mappings - will be used to get exact versions
+  BUSYBOX_1_37_0_VERSION: '1.37.0'
+  BUSYBOX_1_36_1_VERSION: '1.36.1'
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      exact_version: ${{ steps.set-version.outputs.exact_version }}
+      major_version: ${{ steps.set-version.outputs.major_version }}
+    steps:
+      - name: Set exact version
+        id: set-version
+        run: |
+          case "${{ github.event.inputs.version }}" in
+            "1.37.0")
+              echo "exact_version=${{ env.BUSYBOX_1_37_0_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=1.37.0" >> $GITHUB_OUTPUT
+              ;;
+            "1.36.1")
+              echo "exact_version=${{ env.BUSYBOX_1_36_1_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=1.36.1" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unsupported version: ${{ github.event.inputs.version }}"
+              exit 1
+              ;;
+          esac
+
+  build-busybox:
+    needs: get-version
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            wget \
+            tar \
+            bzip2 \
+            xz-utils \
+            libncurses5-dev \
+            libncursesw5-dev \
+            pkg-config
+
+      - name: Download BusyBox source
+        run: |
+          # Try multiple mirrors for reliability - mirrors first, then official site
+          wget -q https://mirror.csclub.uwaterloo.ca/busybox/busybox-${{ needs.get-version.outputs.exact_version }}.tar.bz2 || \
+          wget -q https://mirrors.kernel.org/pub/linux/utils/util-linux/v${{ needs.get-version.outputs.exact_version }}/busybox-${{ needs.get-version.outputs.exact_version }}.tar.bz2 || \
+          wget -q https://busybox.net/downloads/busybox-${{ needs.get-version.outputs.exact_version }}.tar.bz2
+          tar -xjf busybox-${{ needs.get-version.outputs.exact_version }}.tar.bz2
+
+      - name: Configure build
+        run: |
+          cd busybox-${{ needs.get-version.outputs.exact_version }}
+          
+          # Start with default configuration
+          make defconfig
+          
+          # Enable static linking for maximum portability
+          sed -i 's/.*CONFIG_STATIC.*/CONFIG_STATIC=y/' .config
+          
+          # Disable features that might require dynamic linking or cause issues
+          # Keep most features enabled for a full-featured busybox
+          sed -i 's/.*CONFIG_FEATURE_INSTALLER.*/# CONFIG_FEATURE_INSTALLER is not set/' .config
+          sed -i 's/.*CONFIG_INSTALL_NO_USR.*/# CONFIG_INSTALL_NO_USR is not set/' .config
+          
+          # Ensure we have a comprehensive set of utilities
+          sed -i 's/.*CONFIG_FEATURE_SH_STANDALONE.*/CONFIG_FEATURE_SH_STANDALONE=y/' .config
+          sed -i 's/.*CONFIG_FEATURE_PREFER_APPLETS.*/CONFIG_FEATURE_PREFER_APPLETS=y/' .config
+          
+          # Show final configuration
+          echo "=== Final BusyBox Configuration ==="
+          grep -E "CONFIG_STATIC|CONFIG_FEATURE_" .config | head -20
+          
+          # Verify static linking is enabled
+          if grep -q "CONFIG_STATIC=y" .config; then
+            echo "✅ Static linking is enabled"
+          else
+            echo "❌ Static linking is NOT enabled"
+            exit 1
+          fi
+
+      - name: Build BusyBox
+        run: |
+          cd busybox-${{ needs.get-version.outputs.exact_version }}
+          
+          # Build with static linking
+          # Use LDFLAGS to ensure static linking
+          make -j$(nproc) LDFLAGS="-static"
+
+      - name: Prepare BusyBox binary
+        run: |
+          cd busybox-${{ needs.get-version.outputs.exact_version }}
+          
+          # Create simple install directory structure
+          mkdir -p install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          
+          # Copy the main busybox binary
+          cp busybox install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/
+          
+          # Strip the binary to reduce size
+          strip install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/busybox
+
+      - name: Verify static linking and functionality
+        run: |
+          cd busybox-${{ needs.get-version.outputs.exact_version }}/install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          echo "Checking static linking of BusyBox..."
+          
+          echo "=== busybox ==="
+          file busybox
+          echo "Dynamic dependencies:"
+          ldd busybox 2>/dev/null || echo "  (statically linked)"
+          echo
+          
+          # Test basic functionality
+          echo "Testing basic functionality:"
+          echo "BusyBox version:"
+          ./busybox
+          echo
+          echo "Available applets:"
+          ./busybox --list
+          echo
+          
+          # Test a few common commands
+          echo "Testing common commands:"
+          echo "echo test: $(./busybox echo "Hello World")"
+          echo "date: $(./busybox date)"
+          echo "uname: $(./busybox uname -a)"
+          
+          # Check binary size
+          echo "Binary size: $(ls -lh busybox | awk '{print $5}')"
+
+      - name: Create archive
+        run: |
+          cd busybox-${{ needs.get-version.outputs.exact_version }}/install-root/opt
+          tar -czf $GITHUB_WORKSPACE/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          path: busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [get-version, build-busybox]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          find artifacts -type f -name "*.tar.gz" | sort
+
+      - name: Delete existing release if it exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if release exists and delete it
+          if gh release view busybox-${{ needs.get-version.outputs.exact_version }} >/dev/null 2>&1; then
+            echo "Release busybox-${{ needs.get-version.outputs.exact_version }} exists, deleting..."
+            gh release delete busybox-${{ needs.get-version.outputs.exact_version }} --yes
+          else
+            echo "Release busybox-${{ needs.get-version.outputs.exact_version }} does not exist"
+          fi
+
+      - name: Create new release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release
+          gh release create busybox-${{ needs.get-version.outputs.exact_version }} \
+            --title "BusyBox ${{ needs.get-version.outputs.exact_version }}" \
+            --notes "BusyBox ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
+
+          Built from source with the following configuration:
+          - Type: Statically linked binary for maximum portability
+          - Architectures: x86_64 (native), aarch64 (native ARM64)
+          - Features: Full-featured build with most utilities enabled
+          - Build method: Native compilation on respective architectures
+          - Optimization: Stripped static binary for reduced download size
+          - Compatibility: Works on any Linux system with the same architecture
+          
+          ## What is BusyBox?
+          
+          BusyBox combines tiny versions of many common UNIX utilities into a single small executable. It provides replacements for most of the utilities you usually find in GNU fileutils, shellutils, etc. The utilities in BusyBox generally have fewer options than their full-featured GNU cousins; however, the options that are included provide the expected functionality and behave very much like their GNU counterparts.
+          
+          ## Features in This Build
+          
+          **Core Utilities:**
+          - File operations: ls, cp, mv, rm, mkdir, rmdir, ln, chmod, chown, find, etc.
+          - Text processing: cat, grep, sed, awk, sort, uniq, head, tail, wc, etc.
+          - System utilities: ps, top, kill, mount, umount, df, du, free, etc.
+          - Network utilities: wget, nc, ping, telnet, ftp, etc.
+          - Archive utilities: tar, gzip, gunzip, unzip, etc.
+          
+          **Shells and Scripting:**
+          - ash (Almquist shell) - lightweight POSIX-compliant shell
+          - Built-in shell features and job control
+          - Script execution capabilities
+          
+          **System Administration:**
+          - init system support
+          - User and group management utilities
+          - Process management tools
+          - System information commands
+          
+          ## Files
+          - \`busybox-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: BusyBox build for x86_64 architecture
+          - \`busybox-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: BusyBox build for aarch64 architecture
+          
+          ## Installation and Usage
+          
+          ### Basic Installation
+          \`\`\`bash
+          # Extract the archive
+          tar -xzf busybox-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          
+          # Use BusyBox directly
+          ./busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox ls -la
+          ./busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox echo \"Hello World\"
+          \`\`\`
+          
+          ### System Installation
+          \`\`\`bash
+          # Copy the binary to a system location
+          sudo cp busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox /usr/local/bin/
+          
+          # Use it directly
+          busybox ls -la
+          busybox echo \"Hello World\"
+          \`\`\`
+          
+          ### Container/Minimal System Usage
+          Perfect for containers, embedded systems, or rescue environments:
+          \`\`\`bash
+          # Copy just the busybox binary
+          cp busybox-${{ needs.get-version.outputs.exact_version }}-<arch>/busybox /usr/local/bin/
+          
+          # Create symlinks for common commands
+          cd /usr/local/bin
+          for cmd in ls cp mv rm mkdir cat grep sed awk sh; do
+            ln -sf busybox \$cmd
+          done
+          \`\`\`
+          
+          ## Use Cases
+          
+          **Container Images:**
+          - Minimal base images for Docker containers
+          - Debugging containers with essential utilities
+          - Multi-stage builds where size matters
+          
+          **Embedded Systems:**
+          - Resource-constrained environments
+          - IoT devices and appliances
+          - Firmware and boot environments
+          
+          **System Recovery:**
+          - Rescue disks and recovery environments
+          - Emergency system administration
+          - Portable troubleshooting toolkit
+          
+          **Development and Testing:**
+          - Lightweight testing environments
+          - CI/CD pipeline utilities
+          - Cross-platform scripting
+          
+          ## Command Examples
+          
+          **File Operations:**
+          \`\`\`bash
+          busybox ls -la                    # List files with details
+          busybox find /path -name \"*.txt\"  # Find files by pattern
+          busybox tar -czf archive.tar.gz dir/  # Create compressed archive
+          \`\`\`
+          
+          **Text Processing:**
+          \`\`\`bash
+          busybox grep \"pattern\" file.txt   # Search for patterns
+          busybox sed 's/old/new/g' file    # Replace text
+          busybox awk '{print \$1}' file     # Extract columns
+          \`\`\`
+          
+          **Network Operations:**
+          \`\`\`bash
+          busybox wget https://example.com/file  # Download files
+          busybox nc -l -p 8080              # Simple network listener
+          busybox ping google.com            # Network connectivity test
+          \`\`\`
+          
+          **System Information:**
+          \`\`\`bash
+          busybox ps aux                     # List processes
+          busybox top                        # System monitor
+          busybox df -h                      # Disk usage
+          busybox free -h                    # Memory usage
+          \`\`\`
+          
+          This static build ensures maximum portability and can be used on any Linux system without worrying about system dependencies or library versions. The single binary contains hundreds of utilities, making it an excellent Swiss Army knife for system administration and development tasks." \
+            artifacts/busybox-${{ needs.get-version.outputs.exact_version }}-x86_64/busybox-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/busybox-${{ needs.get-version.outputs.exact_version }}-aarch64/busybox-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
