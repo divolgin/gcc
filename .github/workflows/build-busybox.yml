@@ -97,9 +97,6 @@ jobs:
           sed -i 's/.*CONFIG_FEATURE_SH_STANDALONE.*/CONFIG_FEATURE_SH_STANDALONE=y/' .config
           sed -i 's/.*CONFIG_FEATURE_PREFER_APPLETS.*/CONFIG_FEATURE_PREFER_APPLETS=y/' .config
           
-          # Set installation prefix to install in usr/bin instead of bin
-          sed -i 's|.*CONFIG_PREFIX.*|CONFIG_PREFIX="/usr"|' .config
-          
           # Apply configuration changes non-interactively
           yes '' | make oldconfig
           
@@ -127,8 +124,8 @@ jobs:
         run: |
           cd busybox-${{ needs.get-version.outputs.exact_version }}
           
-          # Install BusyBox using make install - CONFIG_PREFIX is already set to /usr in .config
-          make install CONFIG_PREFIX=$PWD/install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          # Install BusyBox with prefix set to install everything under usr/
+          make install CONFIG_PREFIX=$PWD/install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/usr
           
           # Create bin as a symlink to usr/bin for backward compatibility
           cd install-root/opt/busybox-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
