@@ -125,15 +125,25 @@ jobs:
             echo "Looking for errno.h in any asm directory:"
             find /usr/include -name "errno.h" -path "*/asm*"
             
-            # Find the actual asm directory with headers
-            ASM_DIR=$(find /usr/include -name "errno.h" -path "*/asm*" | head -1 | dirname)
-            if [ -n "$ASM_DIR" ]; then
+            # Find the actual asm directory with headers (prefer architecture-specific)
+            ASM_ERRNO=$(find /usr/include -name "errno.h" -path "*/asm*" | grep -E "(aarch64|arm64)" | head -1)
+            if [ -z "$ASM_ERRNO" ]; then
+              ASM_ERRNO=$(find /usr/include -name "errno.h" -path "*/asm*" | head -1)
+            fi
+            
+            if [ -n "$ASM_ERRNO" ]; then
+              ASM_DIR=$(dirname "$ASM_ERRNO")
               echo "Found asm headers in: $ASM_DIR"
+              
+              # Create symlink to the directory containing the asm headers
               if [ "$ASM_DIR" != "/usr/include/asm" ]; then
-                echo "Creating symlink: /usr/include/asm -> $(basename $ASM_DIR)"
+                # Get the relative path from /usr/include/
+                REL_PATH=${ASM_DIR#/usr/include/}
+                echo "Creating symlink: /usr/include/asm -> $REL_PATH"
                 sudo rm -f /usr/include/asm
-                sudo ln -sf $(basename $ASM_DIR) /usr/include/asm
+                sudo ln -sf "$REL_PATH" /usr/include/asm
               fi
+              
               echo "Verifying errno.h access:"
               ls -la /usr/include/asm/errno.h
             else
