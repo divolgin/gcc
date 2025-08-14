@@ -121,11 +121,24 @@ jobs:
           if [ "${{ matrix.arch }}" = "aarch64" ]; then
             echo "=== Checking aarch64 asm headers ==="
             ls -la /usr/include/asm* || echo "No asm directories found"
-            if [ -d "/usr/include/asm-aarch64" ] && [ ! -e "/usr/include/asm" ]; then
-              echo "Creating asm symlink for aarch64"
-              sudo ln -sf asm-aarch64 /usr/include/asm
+            
+            # Check if asm directory exists and what it contains
+            if [ -d "/usr/include/asm" ]; then
+              echo "asm directory exists, checking if it has errno.h:"
+              ls -la /usr/include/asm/errno.h || echo "errno.h not found in asm directory"
             fi
+            
+            # If asm-aarch64 exists but asm doesn't have errno.h, recreate the symlink
+            if [ -d "/usr/include/asm-aarch64" ]; then
+              echo "Found asm-aarch64 directory, ensuring asm symlink points to it"
+              sudo rm -f /usr/include/asm
+              sudo ln -sf asm-aarch64 /usr/include/asm
+              echo "Created asm -> asm-aarch64 symlink"
+            fi
+            
+            echo "Final asm directory state:"
             ls -la /usr/include/asm* || echo "Still no asm directories"
+            ls -la /usr/include/asm/errno.h || echo "errno.h still not accessible"
           fi
           
           # Native build configuration for both architectures
