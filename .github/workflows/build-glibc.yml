@@ -81,8 +81,12 @@ jobs:
             pkg-config \
             linux-libc-dev \
             linux-headers-generic \
-            libc6-dev \
-            gcc-multilib
+            libc6-dev
+          
+          # Install gcc-multilib only on x86_64 (not available on aarch64)
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            sudo apt-get install -y gcc-multilib
+          fi
           
           # Ensure proper kernel headers are installed
           echo "=== Installing architecture-specific headers ==="
