@@ -144,9 +144,25 @@ jobs:
           ln -sf "$ZLIB_STATIC" custom-static-libs/libz.a
           ln -sf "$ZSTD_STATIC" custom-static-libs/libzstd.a
           
-          CFLAGS="-O2 -static" CXXFLAGS="-O2 -static" \
-          LDFLAGS="-static -L$PWD/custom-static-libs -L/usr/lib/$(uname -m)-linux-gnu" \
-          LIBS="$ZLIB_STATIC $ZSTD_STATIC" \
+          # Comprehensive static linking configuration
+          # Force all linking to be static and prevent any dynamic library usage
+          export CC="gcc -static"
+          export CXX="g++ -static"
+          export CFLAGS="-O2 -static"
+          export CXXFLAGS="-O2 -static"
+          export LDFLAGS="-static -L$PWD/custom-static-libs -L/usr/lib/$(uname -m)-linux-gnu"
+          export LIBS="$ZLIB_STATIC $ZSTD_STATIC"
+          
+          echo "=== Build Configuration Debug ==="
+          echo "CC: $CC"
+          echo "CXX: $CXX"
+          echo "CFLAGS: $CFLAGS"
+          echo "CXXFLAGS: $CXXFLAGS"
+          echo "LDFLAGS: $LDFLAGS"
+          echo "LIBS: $LIBS"
+          echo "PKG_CONFIG_PATH: $PKG_CONFIG_PATH"
+          echo "================================="
+          
           ZLIB_CFLAGS="" ZLIB_LIBS="$ZLIB_STATIC" \
           ZSTD_CFLAGS="" ZSTD_LIBS="$ZSTD_STATIC" \
           ../binutils-${{ needs.get-version.outputs.exact_version }}/configure \
@@ -155,11 +171,20 @@ jobs:
             --disable-shared \
             --enable-static \
             --enable-64-bit-bfd \
-            --enable-gold \
+            --enable-gold=yes \
             --enable-ld=default \
             --with-system-zlib \
             --with-zstd \
-            --disable-werror
+            --disable-werror \
+            --disable-nls \
+            --disable-dependency-tracking
+          
+          echo "=== Configure completed successfully ==="
+          echo "Checking what libraries configure detected..."
+          if [ -f config.log ]; then
+            echo "=== Relevant config.log sections ==="
+            grep -A 5 -B 5 -i "static\|shared\|zlib\|zstd" config.log | tail -50
+          fi
 
       - name: Debug configure failure
         if: failure()
@@ -183,13 +208,57 @@ jobs:
           ZSTD_STATIC="$ARCH_PATH/libzstd.a"
           
           # Set environment variables to force static linking during make
+          # Use the same comprehensive approach as configure
+          export CC="gcc -static"
+          export CXX="g++ -static"
           export CFLAGS="-O2 -static"
           export CXXFLAGS="-O2 -static"
           export LDFLAGS="-static -L$PWD/custom-static-libs -L/usr/lib/$(uname -m)-linux-gnu"
           export LIBS="$ZLIB_STATIC $ZSTD_STATIC"
+          export PKG_CONFIG_PATH=""
           
-          # Build with static linking enforced
-          make -j$(nproc) LDFLAGS="-static" CFLAGS="-O2 -static" CXXFLAGS="-O2 -static"
+          echo "=== Make Build Configuration Debug ==="
+          echo "CC: $CC"
+          echo "CXX: $CXX"
+          echo "CFLAGS: $CFLAGS"
+          echo "CXXFLAGS: $CXXFLAGS"
+          echo "LDFLAGS: $LDFLAGS"
+          echo "LIBS: $LIBS"
+          echo "========================================="
+          
+          # Build with static linking enforced - pass all flags explicitly
+          make -j$(nproc) \
+            CC="$CC" \
+            CXX="$CXX" \
+            CFLAGS="$CFLAGS" \
+            CXXFLAGS="$CXXFLAGS" \
+            LDFLAGS="$LDFLAGS" \
+            LIBS="$LIBS"
+
+      - name: Test static linking immediately after build
+        run: |
+          cd build-binutils-${{ matrix.arch }}
+          echo "=== Testing static linking of built binaries ==="
+          
+          # Test a few key binaries before installation
+          for tool in gas/as-new ld/ld-new binutils/ar; do
+            if [ -f "$tool" ]; then
+              echo "=== Testing $tool ==="
+              file_output=$(file "$tool")
+              echo "$file_output"
+              
+              if echo "$file_output" | grep -q "statically linked"; then
+                echo "✅ $tool is statically linked"
+              elif echo "$file_output" | grep -q "dynamically linked"; then
+                echo "❌ ERROR: $tool is dynamically linked"
+                echo "Dependencies:"
+                ldd "$tool" 2>/dev/null || echo "  (ldd failed)"
+              fi
+              echo
+            else
+              echo "⚠️  $tool not found"
+            fi
+          done
 
       - name: Install Binutils
         run: |
