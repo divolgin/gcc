@@ -1,0 +1,329 @@
+name: Build glibc from Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'glibc Version to build'
+        required: true
+        default: '2.41'
+        type: choice
+        options:
+          - '2.41'
+          - '2.36'
+      branch:
+        description: 'Branch to checkout for workflow'
+        required: false
+        default: 'main'
+        type: string
+
+env:
+  # Version mappings - will be used to get exact versions
+  GLIBC_2_41_VERSION: '2.41'
+  GLIBC_2_36_VERSION: '2.36'
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      exact_version: ${{ steps.set-version.outputs.exact_version }}
+      major_version: ${{ steps.set-version.outputs.major_version }}
+    steps:
+      - name: Set exact version
+        id: set-version
+        run: |
+          case "${{ github.event.inputs.version }}" in
+            "2.41")
+              echo "exact_version=${{ env.GLIBC_2_41_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=2.41" >> $GITHUB_OUTPUT
+              ;;
+            "2.36")
+              echo "exact_version=${{ env.GLIBC_2_36_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=2.36" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unsupported version: ${{ github.event.inputs.version }}"
+              exit 1
+              ;;
+          esac
+
+  build-glibc:
+    needs: get-version
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            wget \
+            tar \
+            xz-utils \
+            gawk \
+            bison \
+            python3 \
+            python3-dev \
+            texinfo \
+            gettext \
+            pkg-config
+
+      - name: Download glibc source
+        run: |
+          # Try multiple mirrors for reliability - mirrors first per user preference
+          wget -q https://mirror.csclub.uwaterloo.ca/gnu/libc/glibc-${{ needs.get-version.outputs.exact_version }}.tar.gz || \
+          wget -q https://mirrors.kernel.org/gnu/libc/glibc-${{ needs.get-version.outputs.exact_version }}.tar.gz || \
+          wget -q https://ftp.gnu.org/gnu/libc/glibc-${{ needs.get-version.outputs.exact_version }}.tar.gz
+          tar -xzf glibc-${{ needs.get-version.outputs.exact_version }}.tar.gz
+
+      - name: Configure build
+        run: |
+          cd glibc-${{ needs.get-version.outputs.exact_version }}
+          mkdir build-${{ matrix.arch }}
+          cd build-${{ matrix.arch }}
+          
+          # Native build configuration for both architectures
+          # Build both static and shared libraries for maximum compatibility
+          # Use optimized flags without debug info to reduce binary size
+          CFLAGS="-O2" CXXFLAGS="-O2" \
+          ../configure \
+            --prefix=/opt/glibc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --enable-static \
+            --enable-shared \
+            --disable-werror \
+            --disable-nscd \
+            --enable-kernel=3.2 \
+            --with-headers=/usr/include
+
+      - name: Build glibc
+        run: |
+          cd glibc-${{ needs.get-version.outputs.exact_version }}/build-${{ matrix.arch }}
+          make -j$(nproc)
+
+      - name: Install glibc
+        run: |
+          cd glibc-${{ needs.get-version.outputs.exact_version }}/build-${{ matrix.arch }}
+          make install DESTDIR=$PWD/install-root
+
+      - name: Strip binaries and libraries
+        run: |
+          cd glibc-${{ needs.get-version.outputs.exact_version }}/build-${{ matrix.arch }}/install-root/opt/glibc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          echo "=== Stripping debugging symbols ==="
+          
+          # Strip binaries
+          if [ -d "bin" ]; then
+            find bin -type f -executable -exec strip --strip-unneeded {} \; 2>/dev/null || true
+            echo "Stripped binaries in bin/"
+          fi
+          
+          # Strip shared libraries
+          if [ -d "lib" ]; then
+            find lib -name "*.so*" -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+            echo "Stripped shared libraries in lib/"
+          fi
+          
+          # Note: Static libraries (.a) should not be stripped as it removes symbols needed for linking
+          echo "Static libraries (.a files) left unstripped for linking compatibility"
+
+      - name: Verify static libraries
+        run: |
+          cd glibc-${{ needs.get-version.outputs.exact_version }}/build-${{ matrix.arch }}/install-root/opt/glibc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          echo "=== glibc Build Verification ==="
+          echo "Static libraries built:"
+          find lib -name "*.a" | head -10
+          echo
+          echo "Shared libraries built:"
+          find lib -name "*.so*" | head -10
+          echo
+          echo "Key static library sizes:"
+          ls -lh lib/libc.a lib/libm.a lib/libpthread.a 2>/dev/null || echo "Some libraries not found"
+
+      - name: Build summary
+        run: |
+          echo "=== glibc Build Complete ==="
+          if [ "${{ github.event.inputs.branch }}" != "main" ] && [ "${{ github.event.inputs.branch }}" != "" ]; then
+            echo "ℹ️  Note: Built from branch '${{ github.event.inputs.branch }}' - no release will be created"
+            echo "   Artifacts are available for download from this workflow run"
+          else
+            echo "✅ Built from main branch - release will be created with artifacts"
+          fi
+
+      - name: Create archive
+        run: |
+          cd glibc-${{ needs.get-version.outputs.exact_version }}/build-${{ matrix.arch }}/install-root/opt
+          tar -czf $GITHUB_WORKSPACE/glibc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz glibc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: glibc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          path: glibc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [get-version, build-glibc]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.branch == 'main' || github.event.inputs.branch == ''
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          find artifacts -type f -name "*.tar.gz" | sort
+
+      - name: Delete existing release if it exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if release exists and delete it
+          if gh release view glibc-${{ needs.get-version.outputs.exact_version }} >/dev/null 2>&1; then
+            echo "Release glibc-${{ needs.get-version.outputs.exact_version }} exists, deleting..."
+            gh release delete glibc-${{ needs.get-version.outputs.exact_version }} --yes
+          else
+            echo "Release glibc-${{ needs.get-version.outputs.exact_version }} does not exist"
+          fi
+
+      - name: Create new release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release
+          gh release create glibc-${{ needs.get-version.outputs.exact_version }} \
+            --title "GNU C Library (glibc) ${{ needs.get-version.outputs.exact_version }}" \
+            --notes "GNU C Library (glibc) ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
+
+          Built from source with the following configuration:
+          - Libraries: Both static (.a) and shared (.so) libraries included
+          - Architectures: x86_64 (native), aarch64 (native ARM64)  
+          - Features: Full glibc functionality with static linking support
+          - Type: Native compilation on respective architectures
+          - Optimization: Optimized build without debug symbols for reduced size
+          - Compatibility: Supports kernel 3.2+ (covers all modern Linux distributions)
+          
+          ## What is glibc?
+          
+          The GNU C Library (glibc) is the standard C library for GNU/Linux systems. It provides:
+          - Core C runtime functions (malloc, printf, etc.)
+          - POSIX system call wrappers
+          - Thread support (pthreads)
+          - Mathematical functions (libm)
+          - Network and socket functions
+          - Locale and internationalization support
+          
+          ## Libraries Included
+          
+          **Core Libraries:**
+          - \`libc.a\` / \`libc.so\` - Main C library with standard functions
+          - \`libm.a\` / \`libm.so\` - Mathematical functions (sin, cos, log, etc.)
+          - \`libpthread.a\` / \`libpthread.so\` - POSIX threads support
+          - \`libdl.a\` / \`libdl.so\` - Dynamic loading support
+          - \`librt.a\` / \`librt.so\` - Real-time extensions
+          - \`libutil.a\` / \`libutil.so\` - System utility functions
+          
+          **Additional Libraries:**
+          - \`libresolv.a\` / \`libresolv.so\` - DNS resolver functions
+          - \`libnss_*.a\` / \`libnss_*.so\` - Name Service Switch modules
+          - \`libcrypt.a\` / \`libcrypt.so\` - Password encryption functions
+          - \`libanl.a\` / \`libanl.so\` - Asynchronous name lookup
+          
+          ## Use Cases
+          
+          **Static Linking:**
+          Use the static libraries (.a files) to create fully self-contained binaries:
+          \`\`\`bash
+          gcc -static -L/path/to/glibc/lib program.c -o program
+          \`\`\`
+          
+          **Custom Runtime Environment:**
+          Use as a complete libc replacement in containers or embedded systems:
+          \`\`\`bash
+          export LD_LIBRARY_PATH=/path/to/glibc/lib:\$LD_LIBRARY_PATH
+          \`\`\`
+          
+          **Cross-Compilation Sysroot:**
+          Use as a sysroot for cross-compilation environments.
+          
+          ## Files
+          - \`glibc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: glibc build for x86_64 architecture
+          - \`glibc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: glibc build for aarch64 architecture
+          
+          ## Installation
+          Extract the appropriate archive:
+          \`\`\`bash
+          tar -xzf glibc-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          \`\`\`
+          
+          ## Usage Examples
+          
+          **Static Linking:**
+          \`\`\`bash
+          # Extract glibc
+          tar -xzf glibc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz
+          
+          # Compile with static glibc
+          gcc -static -L\$PWD/glibc-${{ needs.get-version.outputs.exact_version }}-x86_64/lib program.c -o program
+          \`\`\`
+          
+          **Dynamic Linking:**
+          \`\`\`bash
+          # Set up environment
+          export LD_LIBRARY_PATH=\$PWD/glibc-${{ needs.get-version.outputs.exact_version }}-x86_64/lib:\$LD_LIBRARY_PATH
+          
+          # Compile and run
+          gcc program.c -o program
+          ./program
+          \`\`\`
+          
+          **Integration with Other Builds:**
+          This glibc can be used with the GCC, binutils, and other tool builds from this repository:
+          \`\`\`bash
+          # Extract all tools
+          tar -xzf glibc-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          tar -xzf gcc-<version>-<arch>.tar.gz  
+          tar -xzf binutils-<version>-<arch>.tar.gz
+          
+          # Set up complete toolchain
+          export PATH=\$PWD/gcc-<version>-<arch>/bin:\$PWD/binutils-<version>-<arch>/bin:\$PATH
+          export LD_LIBRARY_PATH=\$PWD/glibc-${{ needs.get-version.outputs.exact_version }}-<arch>/lib:\$LD_LIBRARY_PATH
+          
+          # For static linking
+          gcc -static -L\$PWD/glibc-${{ needs.get-version.outputs.exact_version }}-<arch>/lib program.c -o program
+          \`\`\`
+          
+          ## Compatibility Notes
+          
+          - **glibc 2.41 (Default)**: Latest stable version with newest features and security fixes
+          - **glibc 2.36**: Stable LTS-style version, good balance of features and compatibility
+          - **Ubuntu 22.04**: Ships with glibc 2.35 (between our two versions)
+          - **Forward Compatibility**: Programs built with older glibc run on systems with newer glibc
+          - **Backward Compatibility**: Programs built with newer glibc may not run on systems with older glibc
+          - **Kernel Requirements**: Built with kernel 3.2+ support (covers all modern distributions)
+          
+          **Version Selection Guide:**
+          - **Use 2.41**: For latest features, security fixes, and forward-looking builds
+          - **Use 2.36**: For maximum compatibility with existing systems and containers
+          
+          Choose based on your target deployment environment and compatibility requirements." \
+            artifacts/glibc-${{ needs.get-version.outputs.exact_version }}-x86_64/glibc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/glibc-${{ needs.get-version.outputs.exact_version }}-aarch64/glibc-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
