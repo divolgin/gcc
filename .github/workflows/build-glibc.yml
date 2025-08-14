@@ -166,7 +166,8 @@ jobs:
             --with-headers=/usr/include \
             --enable-bind-now \
             --disable-profile \
-            --enable-fortify-source
+            --enable-fortify-source \
+            --without-selinux
 
       - name: Build glibc
         run: |
