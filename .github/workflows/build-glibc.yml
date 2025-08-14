@@ -49,7 +49,7 @@ jobs:
 
   build-glibc:
     needs: get-version
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       matrix:
         include:
@@ -78,7 +78,25 @@ jobs:
             python3-dev \
             texinfo \
             gettext \
-            pkg-config
+            pkg-config \
+            linux-libc-dev \
+            linux-headers-generic \
+            libc6-dev
+          
+          # Install gcc-multilib only on x86_64 (not available on aarch64)
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            sudo apt-get install -y gcc-multilib
+          fi
+          
+          # Ensure proper kernel headers are installed
+          echo "=== Installing architecture-specific headers ==="
+          sudo apt-get install -y linux-headers-$(uname -r)
+          
+          # Install architecture-specific additional headers
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            # Install additional aarch64-specific headers - required for build
+            sudo apt-get install -y linux-libc-dev:arm64
+          fi
 
       - name: Download glibc source
         run: |
@@ -94,6 +112,46 @@ jobs:
           mkdir build-${{ matrix.arch }}
           cd build-${{ matrix.arch }}
           
+          # Verify kernel headers are available
+          echo "=== Available kernel headers ==="
+          find /usr/include -name "linux" -type d
+          ls -la /usr/include/linux/
+          
+          # Fix aarch64 asm header issue
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            echo "=== Debugging aarch64 header structure ==="
+            echo "All asm-related directories:"
+            find /usr/include -name "asm*" -type d
+            echo "Looking for errno.h in any asm directory:"
+            find /usr/include -name "errno.h" -path "*/asm*"
+            
+            # Find the actual asm directory with headers (prefer architecture-specific)
+            ASM_ERRNO=$(find /usr/include -name "errno.h" -path "*/asm*" | grep -E "(aarch64|arm64)" | head -1)
+            if [ -z "$ASM_ERRNO" ]; then
+              ASM_ERRNO=$(find /usr/include -name "errno.h" -path "*/asm*" | head -1)
+            fi
+            
+            if [ -n "$ASM_ERRNO" ]; then
+              ASM_DIR=$(dirname "$ASM_ERRNO")
+              echo "Found asm headers in: $ASM_DIR"
+              
+              # Create symlink to the directory containing the asm headers
+              if [ "$ASM_DIR" != "/usr/include/asm" ]; then
+                # Get the relative path from /usr/include/
+                REL_PATH=${ASM_DIR#/usr/include/}
+                echo "Creating symlink: /usr/include/asm -> $REL_PATH"
+                sudo rm -f /usr/include/asm
+                sudo ln -sf "$REL_PATH" /usr/include/asm
+              fi
+              
+              echo "Verifying errno.h access:"
+              ls -la /usr/include/asm/errno.h
+            else
+              echo "ERROR: No asm/errno.h found anywhere in /usr/include"
+              find /usr/include -name "*errno*" -type f
+            fi
+          fi
+          
           # Native build configuration for both architectures
           # Build both static and shared libraries for maximum compatibility
           # Use optimized flags without debug info to reduce binary size
@@ -105,7 +163,10 @@ jobs:
             --disable-werror \
             --disable-nscd \
             --enable-kernel=3.2 \
-            --with-headers=/usr/include
+            --with-headers=/usr/include \
+            --enable-bind-now \
+            --disable-profile \
+            --enable-fortify-source
 
       - name: Build glibc
         run: |
@@ -142,18 +203,18 @@ jobs:
           cd glibc-${{ needs.get-version.outputs.exact_version }}/build-${{ matrix.arch }}/install-root/opt/glibc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
           echo "=== glibc Build Verification ==="
           echo "Static libraries built:"
-          find lib -name "*.a" | head -10
+          find lib -name "*.a"
           echo
           echo "Shared libraries built:"
-          find lib -name "*.so*" | head -10
+          find lib -name "*.so*"
           echo
           echo "Key static library sizes:"
-          ls -lh lib/libc.a lib/libm.a lib/libpthread.a 2>/dev/null || echo "Some libraries not found"
+          ls -lh lib/libc.a lib/libm.a lib/libpthread.a
 
       - name: Build summary
         run: |
           echo "=== glibc Build Complete ==="
-          if [ "${{ github.event.inputs.branch }}" != "main" ] && [ "${{ github.event.inputs.branch }}" != "" ]; then
+          if [ "${{ github.event.inputs.branch }}" != "main" ]; then
             echo "ℹ️  Note: Built from branch '${{ github.event.inputs.branch }}' - no release will be created"
             echo "   Artifacts are available for download from this workflow run"
           else
@@ -174,7 +235,7 @@ jobs:
   create-release:
     needs: [get-version, build-glibc]
     runs-on: ubuntu-latest
-    if: github.event.inputs.branch == 'main' || github.event.inputs.branch == ''
+    if: github.event.inputs.branch == 'main'
     permissions:
       contents: write
     steps:
