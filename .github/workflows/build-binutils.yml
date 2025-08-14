@@ -150,8 +150,8 @@ jobs:
           export CXX="g++ -static"
           export CFLAGS="-O2 -static"
           export CXXFLAGS="-O2 -static"
-          export LDFLAGS="-static -L$PWD/custom-static-libs -L/usr/lib/$(uname -m)-linux-gnu"
-          export LIBS="$ZLIB_STATIC $ZSTD_STATIC"
+          export LDFLAGS="-static -Wl,-Bstatic -L$PWD/custom-static-libs -L/usr/lib/$(uname -m)-linux-gnu"
+          export LIBS="-Wl,-Bstatic $ZLIB_STATIC $ZSTD_STATIC -Wl,-Bdynamic"
           
           echo "=== Build Configuration Debug ==="
           echo "CC: $CC"
@@ -177,7 +177,10 @@ jobs:
             --with-zstd \
             --disable-werror \
             --disable-nls \
-            --disable-dependency-tracking
+            --disable-dependency-tracking \
+            --disable-plugins \
+            --disable-libdecnumber-shared \
+            --without-debuginfod
           
           echo "=== Configure completed successfully ==="
           echo "Checking what libraries configure detected..."
@@ -213,8 +216,8 @@ jobs:
           export CXX="g++ -static"
           export CFLAGS="-O2 -static"
           export CXXFLAGS="-O2 -static"
-          export LDFLAGS="-static -L$PWD/custom-static-libs -L/usr/lib/$(uname -m)-linux-gnu"
-          export LIBS="$ZLIB_STATIC $ZSTD_STATIC"
+          export LDFLAGS="-static -Wl,-Bstatic -L$PWD/custom-static-libs -L/usr/lib/$(uname -m)-linux-gnu"
+          export LIBS="-Wl,-Bstatic $ZLIB_STATIC $ZSTD_STATIC -Wl,-Bdynamic"
           export PKG_CONFIG_PATH=""
           
           echo "=== Make Build Configuration Debug ==="
@@ -241,6 +244,7 @@ jobs:
           echo "=== Testing static linking of built binaries ==="
           
           # Test a few key binaries before installation
+          STATIC_FAILED=0
           for tool in gas/as-new ld/ld-new binutils/ar; do
             if [ -f "$tool" ]; then
               echo "=== Testing $tool ==="
@@ -253,10 +257,54 @@ jobs:
                 echo "❌ ERROR: $tool is dynamically linked"
                 echo "Dependencies:"
                 ldd "$tool" 2>/dev/null || echo "  (ldd failed)"
+                STATIC_FAILED=1
               fi
               echo
             else
               echo "⚠️  $tool not found"
+            fi
+          done
+          
+          if [ $STATIC_FAILED -eq 1 ]; then
+            echo "🔄 Static linking failed with current approach. Trying alternative minimal build..."
+            exit 1
+          fi
+
+      - name: Alternative minimal static build
+        if: failure()
+        run: |
+          cd build-binutils-${{ matrix.arch }}
+          echo "=== Attempting alternative minimal static build ==="
+          
+          # Clean previous build
+          make clean || true
+          
+          # Try with minimal features and different static linking approach
+          export CC="gcc"
+          export CXX="g++"
+          export CFLAGS="-O2"
+          export CXXFLAGS="-O2"
+          export LDFLAGS="-static"
+          export LIBS=""
+          
+          # Rebuild with minimal configuration
+          make -j$(nproc) \
+            CC="$CC" \
+            CXX="$CXX" \
+            CFLAGS="$CFLAGS" \
+            CXXFLAGS="$CXXFLAGS" \
+            LDFLAGS="$LDFLAGS" \
+            LIBS="$LIBS" \
+            || echo "Alternative build also failed"
+          
+          # Test the alternative build
+          echo "=== Testing alternative build ==="
+          for tool in gas/as-new ld/ld-new binutils/ar; do
+            if [ -f "$tool" ]; then
+              echo "=== Testing alternative $tool ==="
+              file "$tool"
+              ldd "$tool" 2>/dev/null || echo "  (no dynamic dependencies)"
+              echo
             fi
           done
 
