@@ -117,28 +117,29 @@ jobs:
           find /usr/include -name "linux" -type d
           ls -la /usr/include/linux/
           
-          # Fix aarch64 asm header symlink if needed
+          # Fix aarch64 asm header issue
           if [ "${{ matrix.arch }}" = "aarch64" ]; then
-            echo "=== Checking aarch64 asm headers ==="
-            ls -la /usr/include/asm* || echo "No asm directories found"
+            echo "=== Debugging aarch64 header structure ==="
+            echo "All asm-related directories:"
+            find /usr/include -name "asm*" -type d
+            echo "Looking for errno.h in any asm directory:"
+            find /usr/include -name "errno.h" -path "*/asm*"
             
-            # Check if asm directory exists and what it contains
-            if [ -d "/usr/include/asm" ]; then
-              echo "asm directory exists, checking if it has errno.h:"
-              ls -la /usr/include/asm/errno.h || echo "errno.h not found in asm directory"
+            # Find the actual asm directory with headers
+            ASM_DIR=$(find /usr/include -name "errno.h" -path "*/asm*" | head -1 | dirname)
+            if [ -n "$ASM_DIR" ]; then
+              echo "Found asm headers in: $ASM_DIR"
+              if [ "$ASM_DIR" != "/usr/include/asm" ]; then
+                echo "Creating symlink: /usr/include/asm -> $(basename $ASM_DIR)"
+                sudo rm -f /usr/include/asm
+                sudo ln -sf $(basename $ASM_DIR) /usr/include/asm
+              fi
+              echo "Verifying errno.h access:"
+              ls -la /usr/include/asm/errno.h
+            else
+              echo "ERROR: No asm/errno.h found anywhere in /usr/include"
+              find /usr/include -name "*errno*" -type f
             fi
-            
-            # If asm-aarch64 exists but asm doesn't have errno.h, recreate the symlink
-            if [ -d "/usr/include/asm-aarch64" ]; then
-              echo "Found asm-aarch64 directory, ensuring asm symlink points to it"
-              sudo rm -f /usr/include/asm
-              sudo ln -sf asm-aarch64 /usr/include/asm
-              echo "Created asm -> asm-aarch64 symlink"
-            fi
-            
-            echo "Final asm directory state:"
-            ls -la /usr/include/asm* || echo "Still no asm directories"
-            ls -la /usr/include/asm/errno.h || echo "errno.h still not accessible"
           fi
           
           # Native build configuration for both architectures
