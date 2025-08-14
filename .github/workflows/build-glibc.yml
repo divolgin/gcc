@@ -90,8 +90,12 @@ jobs:
           
           # Ensure proper kernel headers are installed
           echo "=== Installing architecture-specific headers ==="
-          if [ "${{ matrix.arch }}" = "x86_64" ]; then
-            sudo apt-get install -y linux-headers-$(uname -r)
+          sudo apt-get install -y linux-headers-$(uname -r)
+          
+          # Install architecture-specific additional headers
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            # Install additional aarch64-specific headers - required for build
+            sudo apt-get install -y linux-libc-dev:arm64
           fi
 
       - name: Download glibc source
@@ -112,6 +116,17 @@ jobs:
           echo "=== Available kernel headers ==="
           find /usr/include -name "linux" -type d
           ls -la /usr/include/linux/
+          
+          # Fix aarch64 asm header symlink if needed
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            echo "=== Checking aarch64 asm headers ==="
+            ls -la /usr/include/asm* || echo "No asm directories found"
+            if [ -d "/usr/include/asm-aarch64" ] && [ ! -e "/usr/include/asm" ]; then
+              echo "Creating asm symlink for aarch64"
+              sudo ln -sf asm-aarch64 /usr/include/asm
+            fi
+            ls -la /usr/include/asm* || echo "Still no asm directories"
+          fi
           
           # Native build configuration for both architectures
           # Build both static and shared libraries for maximum compatibility
