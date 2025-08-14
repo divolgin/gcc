@@ -175,7 +175,7 @@ jobs:
       - name: Build summary
         run: |
           echo "=== glibc Build Complete ==="
-          if [ "${{ github.event.inputs.branch }}" != "main" ] && [ "${{ github.event.inputs.branch }}" != "" ]; then
+          if [ "${{ github.event.inputs.branch }}" != "main" ]; then
             echo "ℹ️  Note: Built from branch '${{ github.event.inputs.branch }}' - no release will be created"
             echo "   Artifacts are available for download from this workflow run"
           else
@@ -196,7 +196,7 @@ jobs:
   create-release:
     needs: [get-version, build-glibc]
     runs-on: ubuntu-latest
-    if: github.event.inputs.branch == 'main' || github.event.inputs.branch == ''
+    if: github.event.inputs.branch == 'main'
     permissions:
       contents: write
     steps:
