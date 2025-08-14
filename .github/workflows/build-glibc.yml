@@ -49,7 +49,7 @@ jobs:
 
   build-glibc:
     needs: get-version
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       matrix:
         include:
@@ -78,7 +78,17 @@ jobs:
             python3-dev \
             texinfo \
             gettext \
-            pkg-config
+            pkg-config \
+            linux-libc-dev \
+            linux-headers-generic \
+            libc6-dev \
+            gcc-multilib
+          
+          # Ensure proper kernel headers are installed
+          echo "=== Installing architecture-specific headers ==="
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            sudo apt-get install -y linux-headers-$(uname -r)
+          fi
 
       - name: Download glibc source
         run: |
@@ -94,6 +104,11 @@ jobs:
           mkdir build-${{ matrix.arch }}
           cd build-${{ matrix.arch }}
           
+          # Verify kernel headers are available
+          echo "=== Available kernel headers ==="
+          find /usr/include -name "linux" -type d
+          ls -la /usr/include/linux/
+          
           # Native build configuration for both architectures
           # Build both static and shared libraries for maximum compatibility
           # Use optimized flags without debug info to reduce binary size
@@ -105,7 +120,10 @@ jobs:
             --disable-werror \
             --disable-nscd \
             --enable-kernel=3.2 \
-            --with-headers=/usr/include
+            --with-headers=/usr/include \
+            --enable-bind-now \
+            --disable-profile \
+            --enable-fortify-source
 
       - name: Build glibc
         run: |
@@ -142,13 +160,13 @@ jobs:
           cd glibc-${{ needs.get-version.outputs.exact_version }}/build-${{ matrix.arch }}/install-root/opt/glibc-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
           echo "=== glibc Build Verification ==="
           echo "Static libraries built:"
-          find lib -name "*.a" | head -10
+          find lib -name "*.a"
           echo
           echo "Shared libraries built:"
-          find lib -name "*.so*" | head -10
+          find lib -name "*.so*"
           echo
           echo "Key static library sizes:"
-          ls -lh lib/libc.a lib/libm.a lib/libpthread.a 2>/dev/null || echo "Some libraries not found"
+          ls -lh lib/libc.a lib/libm.a lib/libpthread.a
 
       - name: Build summary
         run: |
