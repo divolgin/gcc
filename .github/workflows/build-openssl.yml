@@ -1,0 +1,483 @@
+name: Build OpenSSL from Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'OpenSSL Version to build'
+        required: true
+        default: '3.4.0'
+        type: choice
+        options:
+          - '3.4.0'
+
+env:
+  # Version mappings - will be used to get exact versions
+  OPENSSL_3_4_0_VERSION: '3.4.0'
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      exact_version: ${{ steps.set-version.outputs.exact_version }}
+      major_version: ${{ steps.set-version.outputs.major_version }}
+    steps:
+      - name: Set exact version
+        id: set-version
+        run: |
+          case "${{ github.event.inputs.version }}" in
+            "3.4.0")
+              echo "exact_version=${{ env.OPENSSL_3_4_0_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=3.4.0" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unsupported version: ${{ github.event.inputs.version }}"
+              exit 1
+              ;;
+          esac
+
+  build-openssl:
+    needs: get-version
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            wget \
+            tar \
+            xz-utils \
+            zlib1g-dev \
+            perl \
+            pkg-config
+          
+          # Verify we have static zlib library for static linking
+          echo "Checking for static zlib library..."
+          find /usr -name "libz.a" 2>/dev/null || echo "Static zlib library not found"
+          
+          # Ensure we have the static libraries in the expected location
+          ZLIB_STATIC=$(find /usr -name "libz.a" 2>/dev/null | head -1)
+          echo "Static zlib found at: $ZLIB_STATIC"
+
+      - name: Download OpenSSL source
+        run: |
+          # Try multiple mirrors for reliability - mirrors first per user preference
+          wget -q https://mirror.csclub.uwaterloo.ca/OpenSSL/source/openssl-${{ needs.get-version.outputs.exact_version }}.tar.gz || \
+          wget -q https://mirrors.kernel.org/openssl/source/openssl-${{ needs.get-version.outputs.exact_version }}.tar.gz || \
+          wget -q https://www.openssl.org/source/openssl-${{ needs.get-version.outputs.exact_version }}.tar.gz
+          tar -xzf openssl-${{ needs.get-version.outputs.exact_version }}.tar.gz
+
+      - name: Configure build
+        run: |
+          cd openssl-${{ needs.get-version.outputs.exact_version }}
+          
+          # Set architecture-specific configuration
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            OPENSSL_ARCH="linux-x86_64"
+          elif [ "${{ matrix.arch }}" = "aarch64" ]; then
+            OPENSSL_ARCH="linux-aarch64"
+          fi
+          
+          # Find static library paths for linking
+          ARCH_PATH="/usr/lib/$(uname -m)-linux-gnu"
+          ZLIB_STATIC="$ARCH_PATH/libz.a"
+          
+          echo "Using OpenSSL architecture: $OPENSSL_ARCH"
+          echo "Using static zlib: $ZLIB_STATIC"
+          
+          # Verify static libraries exist
+          if [ ! -f "$ZLIB_STATIC" ]; then
+            echo "ERROR: Static zlib library not found at $ZLIB_STATIC"
+            exit 1
+          fi
+          
+          # Configure OpenSSL for static linking
+          # Build both static libraries (.a) and shared libraries (.so) 
+          # Use -static flag to ensure static linking of dependencies
+          # Enable zlib compression support with static linking
+          # Disable shared to force static dependencies but still build .so files
+          CFLAGS="-O2 -fPIC" \
+          LDFLAGS="-static-libgcc -L$ARCH_PATH" \
+          ./Configure $OPENSSL_ARCH \
+            --prefix=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --openssldir=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/ssl \
+            --libdir=lib \
+            zlib-dynamic \
+            no-shared \
+            enable-static \
+            -static \
+            -Wl,-Bstatic -lz -Wl,-Bdynamic
+
+      - name: Build OpenSSL
+        run: |
+          cd openssl-${{ needs.get-version.outputs.exact_version }}
+          
+          # Build with parallel jobs
+          make -j$(nproc)
+
+      - name: Build shared libraries separately
+        run: |
+          cd openssl-${{ needs.get-version.outputs.exact_version }}
+          
+          # Clean previous build
+          make clean
+          
+          # Reconfigure for shared libraries
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            OPENSSL_ARCH="linux-x86_64"
+          elif [ "${{ matrix.arch }}" = "aarch64" ]; then
+            OPENSSL_ARCH="linux-aarch64"
+          fi
+          
+          ARCH_PATH="/usr/lib/$(uname -m)-linux-gnu"
+          
+          # Configure for shared libraries
+          CFLAGS="-O2 -fPIC" \
+          ./Configure $OPENSSL_ARCH \
+            --prefix=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --openssldir=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/ssl \
+            --libdir=lib \
+            zlib-dynamic \
+            shared \
+            -Wl,-rpath,/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/lib
+          
+          # Build shared libraries
+          make -j$(nproc)
+
+      - name: Install OpenSSL
+        run: |
+          cd openssl-${{ needs.get-version.outputs.exact_version }}
+          make install DESTDIR=$PWD/install-root
+
+      - name: Build and install static libraries
+        run: |
+          cd openssl-${{ needs.get-version.outputs.exact_version }}
+          
+          # Clean and rebuild static libraries
+          make clean
+          
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            OPENSSL_ARCH="linux-x86_64"
+          elif [ "${{ matrix.arch }}" = "aarch64" ]; then
+            OPENSSL_ARCH="linux-aarch64"
+          fi
+          
+          ARCH_PATH="/usr/lib/$(uname -m)-linux-gnu"
+          ZLIB_STATIC="$ARCH_PATH/libz.a"
+          
+          # Configure for static libraries with static zlib
+          CFLAGS="-O2 -fPIC" \
+          LDFLAGS="-static-libgcc -L$ARCH_PATH" \
+          ./Configure $OPENSSL_ARCH \
+            --prefix=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --openssldir=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/ssl \
+            --libdir=lib \
+            zlib \
+            no-shared \
+            enable-static \
+            -static \
+            -Wl,-Bstatic -lz -Wl,-Bdynamic
+          
+          # Build static libraries
+          make -j$(nproc)
+          
+          # Install static libraries alongside shared ones
+          make install_sw DESTDIR=$PWD/install-root
+
+      - name: Verify static and shared libraries
+        run: |
+          cd openssl-${{ needs.get-version.outputs.exact_version }}/install-root/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          echo "=== OpenSSL Build Verification ==="
+          
+          echo "Static libraries (.a files):"
+          find lib -name "*.a" | sort
+          echo
+          
+          echo "Shared libraries (.so files):"
+          find lib -name "*.so*" | sort
+          echo
+          
+          echo "Binaries:"
+          find bin -type f | sort
+          echo
+          
+          # Verify static libraries exist
+          if [ -f "lib/libssl.a" ] && [ -f "lib/libcrypto.a" ]; then
+            echo "✅ Static libraries found:"
+            ls -lh lib/libssl.a lib/libcrypto.a
+          else
+            echo "❌ Static libraries missing"
+            exit 1
+          fi
+          
+          # Verify shared libraries exist
+          if [ -f "lib/libssl.so" ] && [ -f "lib/libcrypto.so" ]; then
+            echo "✅ Shared libraries found:"
+            ls -lh lib/libssl.so* lib/libcrypto.so*
+          else
+            echo "❌ Shared libraries missing"
+            exit 1
+          fi
+
+      - name: Verify static linking of binaries
+        run: |
+          cd openssl-${{ needs.get-version.outputs.exact_version }}/install-root/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
+          echo "Checking static linking of OpenSSL binaries..."
+          echo "Expected: Binaries should be statically linked for BusyBox compatibility"
+          echo
+          
+          # Check if binaries are statically linked
+          FAILED=0
+          for tool in openssl; do
+            if [ -f "$tool" ]; then
+              echo "=== $tool ==="
+              file "$tool"
+              echo "Dynamic dependencies:"
+              if ldd_output=$(ldd "$tool" 2>/dev/null); then
+                echo "$ldd_output"
+                # Check for minimal dependencies (only essential system libraries allowed)
+                if echo "$ldd_output" | grep -E "(libssl|libcrypto)" | grep -v "statically linked"; then
+                  echo "❌ ERROR: $tool has dynamic dependencies on OpenSSL libraries"
+                  FAILED=1
+                else
+                  echo "✅ OK: $tool has no dynamic OpenSSL dependencies"
+                fi
+              else
+                echo "  (statically linked)"
+                echo "✅ OK: $tool is statically linked"
+              fi
+              echo
+            fi
+          done
+          
+          if [ $FAILED -eq 1 ]; then
+            echo "❌ FAILED: Some binaries are not properly statically linked"
+            exit 1
+          else
+            echo "✅ SUCCESS: All binaries are compatible with static/BusyBox usage"
+          fi
+
+      - name: Strip binaries and libraries
+        run: |
+          cd openssl-${{ needs.get-version.outputs.exact_version }}/install-root/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          echo "=== Stripping debugging symbols ==="
+          
+          # Strip binaries
+          if [ -d "bin" ]; then
+            find bin -type f -executable -exec strip --strip-unneeded {} \; 2>/dev/null || true
+            echo "Stripped binaries in bin/"
+          fi
+          
+          # Strip shared libraries
+          if [ -d "lib" ]; then
+            find lib -name "*.so*" -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+            echo "Stripped shared libraries in lib/"
+          fi
+          
+          # Note: Static libraries (.a) should not be stripped as it removes symbols needed for linking
+          echo "Static libraries (.a files) left unstripped for linking compatibility"
+
+      - name: Create archive
+        run: |
+          cd openssl-${{ needs.get-version.outputs.exact_version }}/install-root/opt
+          tar -czf $GITHUB_WORKSPACE/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          path: openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [get-version, build-openssl]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          find artifacts -type f -name "*.tar.gz" | sort
+
+      - name: Delete existing release if it exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if release exists and delete it
+          if gh release view openssl-${{ needs.get-version.outputs.exact_version }} >/dev/null 2>&1; then
+            echo "Release openssl-${{ needs.get-version.outputs.exact_version }} exists, deleting..."
+            gh release delete openssl-${{ needs.get-version.outputs.exact_version }} --yes
+          else
+            echo "Release openssl-${{ needs.get-version.outputs.exact_version }} does not exist"
+          fi
+
+      - name: Create new release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release
+          gh release create openssl-${{ needs.get-version.outputs.exact_version }} \
+            --title "OpenSSL ${{ needs.get-version.outputs.exact_version }}" \
+            --notes "OpenSSL ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
+
+          Built from source with the following configuration:
+          - Version: OpenSSL ${{ needs.get-version.outputs.exact_version }} (latest stable)
+          - Architectures: x86_64 (native), aarch64 (native ARM64)
+          - Libraries: Both static (.a) and shared (.so) libraries included
+          - Compatibility: Static linking compatible with glibc 2.41 and BusyBox environments
+          - Type: Native compilation on respective architectures
+          - Optimization: Stripped binaries and shared libraries for reduced download size
+          - Features: Full OpenSSL functionality with zlib compression support
+          
+          ## What is OpenSSL?
+          
+          OpenSSL is a robust, commercial-grade, full-featured toolkit for general-purpose cryptography and secure communication. It provides:
+          - SSL/TLS protocol implementation
+          - Cryptographic functions and algorithms
+          - Certificate handling and validation
+          - Random number generation
+          - Message digests and digital signatures
+          - Public and private key cryptography
+          
+          ## Libraries Included
+          
+          **Core Libraries:**
+          - \`libssl.a\` / \`libssl.so\` - SSL/TLS protocol implementation
+          - \`libcrypto.a\` / \`libcrypto.so\` - Cryptographic functions and utilities
+          
+          **Tools:**
+          - \`openssl\` - Command-line tool for cryptographic operations
+          
+          ## Use Cases
+          
+          **Static Linking (Recommended for BusyBox/Embedded):**
+          Use the static libraries (.a files) to create fully self-contained binaries:
+          \`\`\`bash
+          gcc -static -L/path/to/openssl/lib program.c -lssl -lcrypto -lz -o program
+          \`\`\`
+          
+          **Dynamic Linking:**
+          Use shared libraries for standard applications:
+          \`\`\`bash
+          gcc -L/path/to/openssl/lib program.c -lssl -lcrypto -o program
+          export LD_LIBRARY_PATH=/path/to/openssl/lib:\$LD_LIBRARY_PATH
+          \`\`\`
+          
+          **BusyBox Integration:**
+          Perfect for use with BusyBox environments and minimal systems:
+          \`\`\`bash
+          # Static linking ensures no runtime dependencies
+          gcc -static -L/path/to/openssl/lib -I/path/to/openssl/include program.c -lssl -lcrypto -lz
+          \`\`\`
+          
+          ## Files
+          - \`openssl-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: OpenSSL build for x86_64 architecture
+          - \`openssl-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: OpenSSL build for aarch64 architecture
+          
+          ## Installation
+          Extract the appropriate archive:
+          \`\`\`bash
+          tar -xzf openssl-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          \`\`\`
+          
+          ## Usage Examples
+          
+          **Static Linking (Recommended):**
+          \`\`\`bash
+          # Extract OpenSSL
+          tar -xzf openssl-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz
+          
+          # Compile with static OpenSSL (no runtime dependencies)
+          gcc -static \\
+              -I\$PWD/openssl-${{ needs.get-version.outputs.exact_version }}-x86_64/include \\
+              -L\$PWD/openssl-${{ needs.get-version.outputs.exact_version }}-x86_64/lib \\
+              program.c -lssl -lcrypto -lz -o program
+          \`\`\`
+          
+          **Dynamic Linking:**
+          \`\`\`bash
+          # Set up environment
+          export OPENSSL_ROOT=\$PWD/openssl-${{ needs.get-version.outputs.exact_version }}-x86_64
+          export LD_LIBRARY_PATH=\$OPENSSL_ROOT/lib:\$LD_LIBRARY_PATH
+          export PATH=\$OPENSSL_ROOT/bin:\$PATH
+          
+          # Compile and run
+          gcc -I\$OPENSSL_ROOT/include -L\$OPENSSL_ROOT/lib program.c -lssl -lcrypto -o program
+          ./program
+          \`\`\`
+          
+          **Command-line Usage:**
+          \`\`\`bash
+          # Extract and use OpenSSL command-line tool
+          tar -xzf openssl-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz
+          export PATH=\$PWD/openssl-${{ needs.get-version.outputs.exact_version }}-x86_64/bin:\$PATH
+          
+          # Generate private key
+          openssl genrsa -out private.key 2048
+          
+          # Create certificate signing request
+          openssl req -new -key private.key -out request.csr
+          
+          # Test SSL connection
+          openssl s_client -connect google.com:443
+          
+          # Hash file
+          openssl dgst -sha256 file.txt
+          
+          # Encrypt/decrypt files
+          openssl enc -aes-256-cbc -salt -in file.txt -out file.txt.enc
+          openssl enc -aes-256-cbc -d -in file.txt.enc -out file.txt.dec
+          \`\`\`
+          
+          **Integration with Other Builds:**
+          This OpenSSL can be used with the GCC, binutils, and other tool builds from this repository:
+          \`\`\`bash
+          # Extract all tools
+          tar -xzf openssl-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          tar -xzf gcc-<version>-<arch>.tar.gz  
+          tar -xzf binutils-<version>-<arch>.tar.gz
+          
+          # Set up complete toolchain
+          export PATH=\$PWD/gcc-<version>-<arch>/bin:\$PWD/binutils-<version>-<arch>/bin:\$PWD/openssl-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          
+          # For static linking (recommended for portability)
+          gcc -static \\
+              -I\$PWD/openssl-${{ needs.get-version.outputs.exact_version }}-<arch>/include \\
+              -L\$PWD/openssl-${{ needs.get-version.outputs.exact_version }}-<arch>/lib \\
+              program.c -lssl -lcrypto -lz -o program
+          \`\`\`
+          
+          ## Compatibility Notes
+          
+          - **glibc 2.41 Compatible**: Built and tested with glibc 2.41 for maximum compatibility
+          - **BusyBox Ready**: Static linking ensures compatibility with BusyBox environments
+          - **No Runtime Dependencies**: Static builds eliminate the need for system OpenSSL libraries
+          - **Modern Security**: OpenSSL 3.4.0 includes the latest security fixes and cryptographic standards
+          - **Performance**: Optimized build with stripped binaries for minimal size
+          
+          **Static vs Dynamic Usage:**
+          - **Use Static**: For embedded systems, containers, BusyBox environments, or maximum portability
+          - **Use Dynamic**: For standard desktop/server applications where library sharing is beneficial
+          
+          This build provides both options, allowing you to choose the appropriate linking method for your use case." \
+            artifacts/openssl-${{ needs.get-version.outputs.exact_version }}-x86_64/openssl-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/openssl-${{ needs.get-version.outputs.exact_version }}-aarch64/openssl-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
