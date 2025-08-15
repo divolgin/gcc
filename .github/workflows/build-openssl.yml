@@ -82,7 +82,7 @@ jobs:
           wget -q https://www.openssl.org/source/openssl-${{ needs.get-version.outputs.exact_version }}.tar.gz
           tar -xzf openssl-${{ needs.get-version.outputs.exact_version }}.tar.gz
 
-      - name: Configure build for static libraries
+      - name: Configure build for static and shared libraries
         run: |
           cd openssl-${{ needs.get-version.outputs.exact_version }}
           
@@ -106,26 +106,21 @@ jobs:
             exit 1
           fi
           
-          # Configure OpenSSL for static libraries and binaries
-          # OpenSSL 3.x uses different configuration approach
-          # Build static libraries with static zlib and static binaries
-          CFLAGS="-O2" \
-          LDFLAGS="-static -L$ARCH_PATH" \
+          # Configure OpenSSL to build both static (.a) and shared (.so) libraries
+          # This builds both library types in one pass
+          CFLAGS="-O2 -fPIC" \
           ./Configure $OPENSSL_ARCH \
             --prefix=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
             --openssldir=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/ssl \
             --libdir=lib \
-            no-shared \
-            no-module \
-            no-engine \
-            zlib \
-            -static
+            shared \
+            zlib
 
-      - name: Build OpenSSL static libraries
+      - name: Build OpenSSL libraries
         run: |
           cd openssl-${{ needs.get-version.outputs.exact_version }}
           
-          # Build with parallel jobs
+          # Build both static and shared libraries with parallel jobs
           make -j$(nproc)
 
       - name: Install OpenSSL
@@ -133,21 +128,36 @@ jobs:
           cd openssl-${{ needs.get-version.outputs.exact_version }}
           make install DESTDIR=$PWD/install-root
 
-      - name: Test static binary
+      - name: List dependencies for non-static binaries
         run: |
           cd openssl-${{ needs.get-version.outputs.exact_version }}/install-root/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
-          echo "Testing static OpenSSL binary..."
+          echo "=== Binary Dependency Analysis ==="
           
-          # Test basic functionality
-          echo "OpenSSL version:"
-          ./openssl version || echo "Binary failed to run - checking dependencies..."
-          
-          # Check what the binary actually links to
-          echo "Binary file type:"
-          file ./openssl
-          
-          echo "Dynamic dependencies (should be minimal for static build):"
-          ldd ./openssl || echo "No dynamic dependencies (fully static)"
+          for binary in *; do
+            if [ -f "$binary" ] && [ -x "$binary" ]; then
+              echo "--- $binary ---"
+              echo "File type:"
+              file "$binary"
+              
+              echo "Dependencies:"
+              if ldd_output=$(ldd "$binary" 2>/dev/null); then
+                echo "$ldd_output"
+                
+                # Check if it has dependencies that cannot be statically linked
+                if echo "$ldd_output" | grep -E "(libssl|libcrypto)" > /dev/null; then
+                  echo "⚠️  Note: $binary links to OpenSSL shared libraries"
+                  echo "   For static linking, use the .a files: libssl.a, libcrypto.a"
+                fi
+                
+                if echo "$ldd_output" | grep -E "(libc\.so|libm\.so)" > /dev/null; then
+                  echo "ℹ️  Info: $binary links to standard system libraries (normal for most builds)"
+                fi
+              else
+                echo "✅ $binary appears to be statically linked"
+              fi
+              echo
+            fi
+          done
 
       - name: Verify libraries
         run: |
@@ -175,12 +185,16 @@ jobs:
             exit 1
           fi
           
-          # Check if shared libraries exist (optional)
+          # Check if shared libraries exist (required)
           if [ -f "lib/libssl.so" ] && [ -f "lib/libcrypto.so" ]; then
-            echo "✅ Shared libraries also found:"
+            echo "✅ Shared libraries found:"
             ls -lh lib/libssl.so* lib/libcrypto.so*
           else
-            echo "ℹ️  Shared libraries not found (this is okay - static libraries are primary requirement)"
+            echo "❌ Shared libraries missing - this is required"
+            echo "Expected files: lib/libssl.so, lib/libcrypto.so"
+            echo "Available files in lib/:"
+            ls -la lib/
+            exit 1
           fi
 
       - name: Verify static linking and functionality
@@ -253,6 +267,7 @@ jobs:
   create-release:
     needs: [get-version, build-openssl]
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
@@ -293,8 +308,9 @@ jobs:
           - Version: OpenSSL ${{ needs.get-version.outputs.exact_version }} (latest stable)
           - Architectures: x86_64 (native), aarch64 (native ARM64)
           - Libraries: Both static (.a) and shared (.so) libraries included
-          - Compatibility: Static linking compatible with glibc 2.41 and BusyBox environments
-          - Type: Native compilation on respective architectures
+          - Static Build: Compatible with glibc 2.41 and BusyBox environments
+          - Shared Build: Standard shared libraries for dynamic linking
+          - Type: Dual native compilation (static + shared) on respective architectures
           - Optimization: Stripped binaries and shared libraries for reduced download size
           - Features: Full OpenSSL functionality with zlib compression support
           
