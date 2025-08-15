@@ -114,15 +114,27 @@ jobs:
           
           # Configure OpenSSL to build both static (.a) and shared (.so) libraries
           # This builds both library types in one pass
-          # Skip documentation to speed up builds
-          CFLAGS="-O2 -fPIC" \
-          ./Configure $OPENSSL_ARCH \
-            --prefix=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
-            --openssldir=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/ssl \
-            --libdir=lib \
-            shared \
-            zlib \
-            no-docs
+          # Skip documentation to speed up builds (only available in 3.1+)
+          if [[ "${{ needs.get-version.outputs.exact_version }}" == "3.0."* ]]; then
+            # OpenSSL 3.0.x doesn't support no-docs option
+            CFLAGS="-O2 -fPIC" \
+            ./Configure $OPENSSL_ARCH \
+              --prefix=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+              --openssldir=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/ssl \
+              --libdir=lib \
+              shared \
+              zlib
+          else
+            # OpenSSL 3.1+ supports no-docs option
+            CFLAGS="-O2 -fPIC" \
+            ./Configure $OPENSSL_ARCH \
+              --prefix=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+              --openssldir=/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/ssl \
+              --libdir=lib \
+              shared \
+              zlib \
+              no-docs
+          fi
 
       - name: Build OpenSSL libraries
         run: |
