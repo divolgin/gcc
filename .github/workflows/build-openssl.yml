@@ -112,7 +112,7 @@ jobs:
             exit 1
           fi
           
-          # Configure OpenSSL to build both static (.a) and shared (.so) libraries
+          # Configure OpenSSL to build both static and shared libraries
           # This builds both library types in one pass
           # Skip documentation to speed up builds (only available in 3.1+)
           if [[ "${{ needs.get-version.outputs.exact_version }}" == "3.0."* ]]; then
@@ -166,7 +166,7 @@ jobs:
                 # Check if it has dependencies that cannot be statically linked
                 if echo "$ldd_output" | grep -E "(libssl|libcrypto)" > /dev/null; then
                   echo "⚠️  Note: $binary links to OpenSSL shared libraries"
-                  echo "   For static linking, use the .a files: libssl.a, libcrypto.a"
+                  echo "   For static linking, use the static files: libssl.a, libcrypto.a"
                 fi
                 
                 if echo "$ldd_output" | grep -E "(libc\.so|libm\.so)" > /dev/null; then
@@ -184,7 +184,7 @@ jobs:
           cd openssl-${{ needs.get-version.outputs.exact_version }}/install-root/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
           echo "=== OpenSSL Build Verification ==="
           
-          echo "Static libraries (.a files):"
+          echo "Static libraries:"
           find lib -name "*.a" | sort
           echo
           
@@ -272,8 +272,8 @@ jobs:
             echo "Stripped shared libraries in lib/"
           fi
           
-          # Note: Static libraries (.a) should not be stripped as it removes symbols needed for linking
-          echo "Static libraries (.a files) left unstripped for linking compatibility"
+          # Note: Static libraries should not be stripped as it removes symbols needed for linking
+          echo "Static libraries left unstripped for linking compatibility"
 
       - name: Create archive
         run: |
@@ -321,6 +321,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -x  # Enable debug output to trace shell expansion
           # Create the release
           gh release create openssl-${{ needs.get-version.outputs.exact_version }} \
             --title "OpenSSL ${{ needs.get-version.outputs.exact_version }}" \
@@ -329,7 +330,7 @@ jobs:
           Built from source with the following configuration:
           - Version: OpenSSL ${{ needs.get-version.outputs.exact_version }}
           - Architectures: x86_64 (native), aarch64 (native ARM64)
-          - Libraries: Both static and shared libraries included
+          - Libraries: Both static (.a) and shared (.so) libraries included
           - Static Build: Compatible with glibc 2.36+ and BusyBox environments
           - Shared Build: Standard shared libraries for dynamic linking
           - Type: Dual native compilation (static + shared) on respective architectures
@@ -358,7 +359,7 @@ jobs:
           ## Use Cases
           
           **Static Linking (Recommended for BusyBox/Embedded):**
-          Use the static libraries to create fully self-contained binaries:
+          Use the static libraries (.a files) to create fully self-contained binaries:
           \`\`\`bash
           # For BusyBox/embedded systems - fully static
           gcc -static -L/path/to/openssl/lib -I/path/to/openssl/include program.c -lssl -lcrypto -lz -o program
