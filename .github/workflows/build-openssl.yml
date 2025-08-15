@@ -10,10 +10,12 @@ on:
         type: choice
         options:
           - '3.4.0'
+          - '3.0.15'
 
 env:
   # Version mappings - will be used to get exact versions
   OPENSSL_3_4_0_VERSION: '3.4.0'
+  OPENSSL_3_0_15_VERSION: '3.0.15'
 
 jobs:
   get-version:
@@ -29,6 +31,10 @@ jobs:
             "3.4.0")
               echo "exact_version=${{ env.OPENSSL_3_4_0_VERSION }}" >> $GITHUB_OUTPUT
               echo "major_version=3.4.0" >> $GITHUB_OUTPUT
+              ;;
+            "3.0.15")
+              echo "exact_version=${{ env.OPENSSL_3_0_15_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=3.0.15" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Unsupported version: ${{ github.event.inputs.version }}"
@@ -298,10 +304,10 @@ jobs:
             --notes "OpenSSL ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
 
           Built from source with the following configuration:
-          - Version: OpenSSL ${{ needs.get-version.outputs.exact_version }} (latest stable)
+          - Version: OpenSSL ${{ needs.get-version.outputs.exact_version }}
           - Architectures: x86_64 (native), aarch64 (native ARM64)
           - Libraries: Both static (.a) and shared (.so) libraries included
-          - Static Build: Compatible with glibc 2.41 and BusyBox environments
+          - Static Build: Compatible with glibc 2.36+ and BusyBox environments
           - Shared Build: Standard shared libraries for dynamic linking
           - Type: Dual native compilation (static + shared) on respective architectures
           - Optimization: Stripped binaries and shared libraries for reduced download size
@@ -429,12 +435,22 @@ jobs:
               program.c -lssl -lcrypto -lz -o program
           \`\`\`
           
+          ## Version Information
+          
+          **Available Versions:**
+          - **OpenSSL 3.4.0**: Latest stable with newest features and security fixes
+          - **OpenSSL 3.0.15**: LTS version with better compatibility for older systems
+          
+          **Version Selection Guide:**
+          - **Use 3.4.0**: For latest features, newest security fixes, and forward-looking builds
+          - **Use 3.0.15**: For maximum compatibility with existing systems and older distributions
+          
           ## Compatibility Notes
           
-          - **glibc 2.41 Compatible**: Built and tested with glibc 2.41 for maximum compatibility
+          - **glibc 2.36+ Compatible**: Built and tested for broad glibc compatibility
           - **BusyBox Ready**: Static linking ensures compatibility with BusyBox environments
           - **No Runtime Dependencies**: Static builds eliminate the need for system OpenSSL libraries
-          - **Modern Security**: OpenSSL 3.4.0 includes the latest security fixes and cryptographic standards
+          - **Symbol Compatibility**: 3.0.15 provides better symbol compatibility with Ubuntu 22.04 and similar systems
           - **Performance**: Optimized build with stripped binaries for minimal size
           
           **Static vs Dynamic Usage:**
