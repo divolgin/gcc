@@ -321,7 +321,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -x  # Enable debug output to trace shell expansion
           # Create the release
           gh release create openssl-${{ needs.get-version.outputs.exact_version }} \
             --title "OpenSSL ${{ needs.get-version.outputs.exact_version }}" \
@@ -365,7 +364,7 @@ jobs:
           gcc -static -L/path/to/openssl/lib -I/path/to/openssl/include program.c -lssl -lcrypto -lz -o program
           
           # Verify no dynamic dependencies
-          ldd program  # Should show "not a dynamic executable" or minimal system deps
+          ldd program  # Should show 'not a dynamic executable' or minimal system deps
           \`\`\`
           
           **Dynamic Linking:**
