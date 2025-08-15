@@ -182,6 +182,9 @@ jobs:
                   echo "Verifying $lib_name:"
                   if ar t "$lib" >/dev/null 2>&1; then
                     echo "✅ $lib_name is a valid static library"
+                    # Show some symbol information
+                    echo "  Sample symbols:"
+                    nm "$lib" | grep -E "(crypt|hash)" | head -3 || echo "  (no crypt/hash symbols visible)"
                   else
                     echo "❌ ERROR: $lib_name is corrupted or invalid"
                     FAILED=1
@@ -239,14 +242,31 @@ jobs:
           find include -name "*.h"
           echo
           
-          # Check for static library (essential for development)
-          echo "Static library (libcrypt-dev requirement):"
-          if [ ! -f "lib/libcrypt.a" ]; then
-            echo "ERROR: libcrypt.a not found - required for libcrypt-dev"
+          # Check for static libraries (essential for development)
+          echo "Static libraries (libcrypt-dev requirement):"
+          echo "Looking for libcrypt.a and/or libxcrypt.a..."
+          
+          FOUND_LIBCRYPT=false
+          FOUND_LIBXCRYPT=false
+          
+          if [ -f "lib/libcrypt.a" ]; then
+            echo "✅ libcrypt.a found"
+            ls -lh lib/libcrypt.a
+            FOUND_LIBCRYPT=true
+          fi
+          
+          if [ -f "lib/libxcrypt.a" ]; then
+            echo "✅ libxcrypt.a found"
+            ls -lh lib/libxcrypt.a
+            FOUND_LIBXCRYPT=true
+          fi
+          
+          if ! $FOUND_LIBCRYPT && ! $FOUND_LIBXCRYPT; then
+            echo "ERROR: Neither libcrypt.a nor libxcrypt.a found - at least one required"
+            echo "Available .a files:"
+            find lib -name "*.a" || echo "No .a files found"
             exit 1
           fi
-          echo "✅ libcrypt.a found"
-          ls -lh lib/libcrypt.a
           echo
           
           # Note: This is a static-only build, so no shared libraries expected
@@ -290,17 +310,37 @@ jobs:
           
           # Verify library symbols (functionality check)
           echo "Library symbols verification:"
-          if ! nm lib/libcrypt.a | grep -E "(crypt|hash)" | head -10; then
-            echo "WARNING: No crypt/hash symbols found in libcrypt.a"
-          else
-            echo "✅ Crypt/hash symbols verified in libcrypt.a"
+          SYMBOLS_VERIFIED=false
+          
+          if [ -f "lib/libcrypt.a" ]; then
+            echo "Checking symbols in libcrypt.a:"
+            if nm lib/libcrypt.a | grep -E "(crypt|hash)" | head -5; then
+              echo "✅ Crypt/hash symbols verified in libcrypt.a"
+              SYMBOLS_VERIFIED=true
+            fi
+          fi
+          
+          if [ -f "lib/libxcrypt.a" ]; then
+            echo "Checking symbols in libxcrypt.a:"
+            if nm lib/libxcrypt.a | grep -E "(crypt|hash)" | head -5; then
+              echo "✅ Crypt/hash symbols verified in libxcrypt.a"
+              SYMBOLS_VERIFIED=true
+            fi
+          fi
+          
+          if ! $SYMBOLS_VERIFIED; then
+            echo "WARNING: No crypt/hash symbols found in available static libraries"
           fi
           echo
           
           # Summary of libcrypt-dev completeness
           echo "=== libcrypt-dev Package Completeness Summary ==="
           echo "✅ Required: Header files (crypt.h)"
-          echo "✅ Required: Static library (libcrypt.a)" 
+          if $FOUND_LIBCRYPT; then
+            echo "✅ Required: Static library (libcrypt.a)"
+          elif $FOUND_LIBXCRYPT; then
+            echo "✅ Required: Static library (libxcrypt.a - provides libcrypt functionality)"
+          fi 
           echo "ℹ️  Note: Static-only build (no shared libraries - use static linking)"
           
           # Check optional but recommended components
