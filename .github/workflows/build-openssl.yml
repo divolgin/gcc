@@ -205,32 +205,43 @@ jobs:
             exit 1
           fi
 
-      - name: Test OpenSSL binary (informational)
+      - name: Test OpenSSL binary with correct library path
         run: |
-          cd openssl-${{ needs.get-version.outputs.exact_version }}/install-root/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}/bin
-          echo "=== OpenSSL Binary Analysis ==="
+          cd openssl-${{ needs.get-version.outputs.exact_version }}/install-root/opt/openssl-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          echo "=== OpenSSL Binary Testing ==="
           
-          # Test if the binary works
-          echo "Functionality test:"
-          if ./openssl version 2>/dev/null; then
-            echo "✅ OpenSSL binary works correctly"
+          # Test 1: Without library path (expected to fail)
+          echo "Test 1: Running without LD_LIBRARY_PATH (system libraries):"
+          if ./bin/openssl version 2>/dev/null; then
+            echo "✅ Binary works with system libraries"
           else
-            echo "⚠️  OpenSSL binary has version compatibility issues with system libraries"
-            echo "   This is normal - the static libraries (.a files) are the main deliverable"
+            echo "❌ Binary fails with system libraries (expected)"
           fi
+          echo
+          
+          # Test 2: With correct library path (should work)
+          echo "Test 2: Running with LD_LIBRARY_PATH pointing to our libraries:"
+          if LD_LIBRARY_PATH=$PWD/lib ./bin/openssl version 2>/dev/null; then
+            echo "✅ SUCCESS: Binary works with our libraries!"
+            echo "OpenSSL version: $(LD_LIBRARY_PATH=$PWD/lib ./bin/openssl version)"
+          else
+            echo "❌ Binary still fails even with our libraries"
+          fi
+          echo
+          
+          # Show which libraries it would use
+          echo "Library resolution with LD_LIBRARY_PATH:"
+          echo "LD_LIBRARY_PATH=$PWD/lib ldd ./bin/openssl"
+          LD_LIBRARY_PATH=$PWD/lib ldd ./bin/openssl 2>/dev/null || echo "ldd failed"
           echo
           
           # Show binary information
           echo "Binary information:"
-          echo "File type: $(file ./openssl)"
+          echo "File type: $(file ./bin/openssl)"
           echo
           
-          echo "Dependencies:"
-          if ldd_output=$(ldd ./openssl 2>/dev/null); then
-            echo "$ldd_output"
-          else
-            echo "Binary is fully statically linked"
-          fi
+          echo "Default dependencies (without LD_LIBRARY_PATH):"
+          ldd ./bin/openssl 2>/dev/null || echo "ldd failed"
 
       - name: Strip binaries and libraries
         run: |
