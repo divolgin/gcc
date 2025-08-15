@@ -92,7 +92,7 @@ jobs:
           
           # Native build configuration for both architectures
           # Use optimized flags without debug info to reduce binary size
-          # Build static libraries and static binaries to eliminate runtime dependencies
+          # Build both static and shared libraries, but with static linking for the shared libs
           # Configure for glibc 2.41 compatibility with strong hashes
           CFLAGS="-O2" CXXFLAGS="-O2" \
           LDFLAGS="-static" \
@@ -101,7 +101,7 @@ jobs:
             --enable-hashes=strong,glibc \
             --enable-obsolete-api=glibc \
             --enable-static \
-            --disable-shared \
+            --enable-shared \
             --disable-werror \
             --disable-failure-tokens
 
@@ -131,15 +131,20 @@ jobs:
             echo "Stripped binaries in bin/"
           fi
           
-          # Note: No shared libraries to strip in static build
+          # Strip shared libraries
+          if [ -d "lib" ]; then
+            find lib -name "*.so*" -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+            echo "Stripped shared libraries in lib/"
+          fi
+          
           # Note: Static libraries (.a) should not be stripped as it removes symbols needed for linking
           echo "Static libraries (.a files) left unstripped for linking compatibility"
 
       - name: Verify static linking
         run: |
           cd libxcrypt-${{ needs.get-version.outputs.exact_version }}/build-${{ matrix.arch }}/install-root/opt/libxcrypt-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
-          echo "Checking static linking of libxcrypt tools and libraries..."
-          echo "Expected: All binaries should be statically linked with no dynamic dependencies"
+          echo "Checking static linking of libxcrypt tools and shared libraries..."
+          echo "Expected: All binaries and shared libraries should have no external dynamic dependencies"
           echo
           
           # Check if any binaries exist and verify they are statically linked
@@ -200,16 +205,40 @@ jobs:
             FAILED=1
           fi
           
-          # Check for any unexpected shared libraries (should not exist in static build)
+          # Check shared libraries and verify they are statically linked (no external deps)
           echo
-          echo "=== Shared Libraries Check (should be empty) ==="
+          echo "=== Shared Libraries Static Linking Verification ==="
           if [ -d "lib" ]; then
             SHARED_LIBS=$(find lib -name "*.so*" | wc -l)
-            if [ "$SHARED_LIBS" -eq 0 ]; then
-              echo "✅ OK: No shared libraries found (as expected for static build)"
+            if [ "$SHARED_LIBS" -gt 0 ]; then
+              echo "✅ Found $SHARED_LIBS shared libraries:"
+              find lib -name "*.so*" -exec ls -lh {} \;
+              echo
+              
+              # Verify shared libraries have minimal dependencies (should only depend on basic system libs)
+              for lib in lib/*.so*; do
+                if [ -f "$lib" ]; then
+                  lib_name=$(basename "$lib")
+                  echo "=== $lib_name ==="
+                  file "$lib"
+                  echo "Dynamic dependencies:"
+                  if ldd_output=$(ldd "$lib" 2>/dev/null); then
+                    echo "$ldd_output"
+                    # Check for problematic dependencies (anything beyond basic system libs)
+                    if echo "$ldd_output" | grep -v -E "(linux-vdso|ld-linux|libc\.so|libm\.so|libdl\.so|libpthread\.so)" | grep "=>"; then
+                      echo "⚠️  WARNING: $lib_name has non-standard dependencies"
+                    else
+                      echo "✅ OK: $lib_name has only standard system dependencies"
+                    fi
+                  else
+                    echo "  (no dynamic dependencies - fully static)"
+                    echo "✅ EXCELLENT: $lib_name is fully statically linked"
+                  fi
+                  echo
+                fi
+              done
             else
-              echo "❌ ERROR: Found $SHARED_LIBS shared libraries in static build:"
-              find lib -name "*.so*"
+              echo "❌ ERROR: No shared libraries found - expected .so files to be built"
               FAILED=1
             fi
           fi
@@ -219,7 +248,7 @@ jobs:
             echo "❌ FAILED: Static linking verification failed"
             exit 1
           else
-            echo "✅ SUCCESS: All components are properly statically linked"
+            echo "✅ SUCCESS: All components are properly built with minimal dependencies"
           fi
 
       - name: Verify build
@@ -269,14 +298,27 @@ jobs:
           fi
           echo
           
-          # Note: This is a static-only build, so no shared libraries expected
-          echo "Build type verification (static-only build):"
+          # Check for shared libraries (should exist in this build)
+          echo "Shared libraries verification:"
+          FOUND_SHARED=false
+          
           if find lib -name "libcrypt.so*" | grep -q .; then
-            echo "❌ ERROR: Found shared libraries in static-only build"
-            find lib -name "libcrypt.so*"
+            echo "✅ libcrypt.so* found:"
+            find lib -name "libcrypt.so*" -exec ls -lh {} \;
+            FOUND_SHARED=true
+          fi
+          
+          if find lib -name "libxcrypt.so*" | grep -q .; then
+            echo "✅ libxcrypt.so* found:"
+            find lib -name "libxcrypt.so*" -exec ls -lh {} \;
+            FOUND_SHARED=true
+          fi
+          
+          if ! $FOUND_SHARED; then
+            echo "❌ ERROR: No shared libraries found - expected .so files"
+            echo "Available library files:"
+            find lib -name "*.so*" || echo "No .so files found"
             exit 1
-          else
-            echo "✅ Confirmed: Static-only build (no shared libraries as expected)"
           fi
           echo
           
@@ -341,7 +383,7 @@ jobs:
           elif $FOUND_LIBXCRYPT; then
             echo "✅ Required: Static library (libxcrypt.a - provides libcrypt functionality)"
           fi 
-          echo "ℹ️  Note: Static-only build (no shared libraries - use static linking)"
+          echo "ℹ️  Note: Hybrid build (both static .a and shared .so libraries available)"
           
           # Check optional but recommended components
           HAS_PKGCONFIG=false
@@ -434,7 +476,7 @@ jobs:
           Built from source with the following configuration:
           - Hash algorithms: Strong modern hashes + glibc compatibility hashes
           - Architectures: x86_64 (native), aarch64 (native ARM64)  
-          - Libraries: Static libraries (.a) only - no runtime dependencies
+          - Libraries: Both static (.a) and shared (.so) libraries with minimal dependencies
           - API: glibc-compatible obsolete API enabled for maximum compatibility
           - Type: Static build with native compilation on respective architectures
           - Optimization: Optimized build without debug symbols for reduced size
@@ -484,10 +526,17 @@ jobs:
           gcc program.c -lcrypt -L/path/to/libxcrypt/lib
           \`\`\`
           
-          **Static Linking (Required):**
-          This build only provides static libraries - create self-contained binaries:
+          **Static Linking:**
+          Use static libraries for self-contained binaries:
           \`\`\`bash
           gcc -static -L/path/to/libxcrypt/lib program.c -lcrypt
+          \`\`\`
+          
+          **Dynamic Linking:**
+          Use shared libraries for standard dynamic linking:
+          \`\`\`bash
+          gcc -L/path/to/libxcrypt/lib program.c -lcrypt
+          export LD_LIBRARY_PATH=/path/to/libxcrypt/lib:\$LD_LIBRARY_PATH
           \`\`\`
           
           **Modern Password Hashing:**
@@ -523,14 +572,24 @@ jobs:
           gcc program.c -lcrypt -o program
           \`\`\`
           
-          **Static Linking (Only Option):**
+          **Static Linking:**
           \`\`\`bash
           gcc -static -I\$PWD/libxcrypt-${{ needs.get-version.outputs.exact_version }}-x86_64/include \\
               -L\$PWD/libxcrypt-${{ needs.get-version.outputs.exact_version }}-x86_64/lib \\
               program.c -lcrypt -o program_static
           \`\`\`
           
-          **Note**: This build only provides static libraries. Dynamic linking is not supported.
+          **Dynamic Linking:**
+          \`\`\`bash
+          # Set up environment
+          export LD_LIBRARY_PATH=\$PWD/libxcrypt-${{ needs.get-version.outputs.exact_version }}-x86_64/lib:\$LD_LIBRARY_PATH
+          
+          # Compile and run
+          gcc -I\$PWD/libxcrypt-${{ needs.get-version.outputs.exact_version }}-x86_64/include \\
+              -L\$PWD/libxcrypt-${{ needs.get-version.outputs.exact_version }}-x86_64/lib \\
+              program.c -lcrypt -o program
+          ./program
+          \`\`\`
           
           **Integration with GCC + glibc builds:**
           \`\`\`bash
