@@ -329,7 +329,7 @@ jobs:
           Built from source with the following configuration:
           - Version: OpenSSL ${{ needs.get-version.outputs.exact_version }}
           - Architectures: x86_64 (native), aarch64 (native ARM64)
-          - Libraries: Both static (.a) and shared (.so) libraries included
+          - Libraries: Both static and shared libraries included
           - Static Build: Compatible with glibc 2.36+ and BusyBox environments
           - Shared Build: Standard shared libraries for dynamic linking
           - Type: Dual native compilation (static + shared) on respective architectures
@@ -358,7 +358,7 @@ jobs:
           ## Use Cases
           
           **Static Linking (Recommended for BusyBox/Embedded):**
-          Use the static libraries (.a files) to create fully self-contained binaries:
+          Use the static libraries to create fully self-contained binaries:
           \`\`\`bash
           # For BusyBox/embedded systems - fully static
           gcc -static -L/path/to/openssl/lib -I/path/to/openssl/include program.c -lssl -lcrypto -lz -o program
