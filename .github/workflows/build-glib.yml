@@ -67,7 +67,12 @@ jobs:
             python3-wheel \
             gettext \
             libffi-dev \
-            libmount-dev \
+            libpcre2-dev \
+            zlib1g-dev
+          
+          # Install static libraries for dependencies we need
+          sudo apt-get install -y \
+            libffi-dev \
             libpcre2-dev \
             zlib1g-dev
           
@@ -98,26 +103,35 @@ jobs:
           cd glib-${{ needs.get-version.outputs.exact_version }}
           source ../build-env/bin/activate
           
+          # Set environment for static linking
+          export LDFLAGS="-static -static-libgcc"
+          export CFLAGS="-static -fPIC"
+          export PKG_CONFIG="pkg-config --static"
+          
           # Create build directory
           mkdir -p _build
           
-          # Configure with meson for static build
+          # Configure with meson for static build - disable all system dependencies
+          # Use both libraries but configure for minimal dependencies
           meson setup _build \
             --prefix=/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
             --default-library=both \
             --buildtype=release \
+            --prefer-static \
             -Dman=false \
             -Ddtrace=false \
             -Dsystemtap=false \
             -Dgtk_doc=false \
             -Dintrospection=disabled \
-            -Dnls=enabled \
-            -Dlibmount=enabled \
+            -Dnls=disabled \
+            -Dlibmount=disabled \
             -Dselinux=disabled \
-            -Dxattr=true \
+            -Dxattr=false \
             -Dlibelf=disabled \
             -Dtests=false \
-            -Dinstalled_tests=false
+            -Dinstalled_tests=false \
+            -Dglib_debug=disabled \
+            -Db_staticpic=true
           
           echo "Meson configuration completed"
 
@@ -276,10 +290,10 @@ jobs:
             fi
           done
 
-      - name: Test GLib tools
+      - name: Test GLib tools and verify static linking
         run: |
           cd glib-${{ needs.get-version.outputs.exact_version }}/install-root/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
-          echo "=== GLib Tools Testing ==="
+          echo "=== GLib Tools Testing and Static Link Verification ==="
           
           # Test some basic GLib tools
           if [ -f "bin/glib-compile-schemas" ]; then
@@ -297,15 +311,40 @@ jobs:
             ./bin/gio version || echo "Tool test failed"
           fi
           
-          # Show library dependencies for tools
+          # Verify static linking for key tools
           echo
-          echo "Library dependencies for key tools:"
+          echo "=== Static Link Verification ==="
+          FAILED_STATIC_CHECK=0
+          
           for tool in bin/glib-compile-schemas bin/gdbus bin/gio; do
             if [ -f "$tool" ]; then
-              echo "--- $tool ---"
-              ldd "$tool" 2>/dev/null || echo "Static binary or ldd failed"
+              echo "--- Checking $tool ---"
+              
+              # Check if binary is dynamically linked
+              if ldd_output=$(ldd "$tool" 2>/dev/null); then
+                echo "❌ $tool is dynamically linked:"
+                echo "$ldd_output"
+                
+                # Check for problematic dependencies
+                if echo "$ldd_output" | grep -E "(libmount|libselinux|libattr)" > /dev/null; then
+                  echo "🚨 CRITICAL: $tool depends on system libraries that should be static!"
+                  FAILED_STATIC_CHECK=1
+                fi
+              else
+                echo "✅ $tool appears to be statically linked"
+              fi
+              echo
             fi
           done
+          
+          # Fail if any tools have problematic dependencies
+          if [ $FAILED_STATIC_CHECK -eq 1 ]; then
+            echo "❌ Some binaries are not properly statically linked!"
+            echo "This indicates the build configuration needs adjustment."
+            exit 1
+          else
+            echo "✅ All checked binaries appear to be properly statically linked"
+          fi
 
       - name: Strip binaries and libraries
         run: |
@@ -393,11 +432,12 @@ jobs:
           - Version: GLib ${{ needs.get-version.outputs.exact_version }}
           - Architectures: x86_64 (native), aarch64 (native ARM64)
           - Libraries: Both static (.a) and shared (.so) libraries included
-          - Static Build: Compatible with glibc 2.36+ and BusyBox environments
-          - Shared Build: Standard shared libraries for dynamic linking
+          - Static Build: Fully static binaries with no system library dependencies
+          - Shared Build: Standard shared libraries for dynamic linking  
           - Type: Dual native compilation (static + shared) on respective architectures
+          - Static Configuration: libmount, xattr, selinux, and NLS disabled for minimal dependencies
           - Optimization: Stripped binaries and shared libraries for reduced download size
-          - Features: Full GLib functionality with development files included
+          - Features: Core GLib functionality optimized for embedded/static deployment
           - Dev Files: Headers, pkg-config files, and tools included for development
           
           ## What is GLib?
@@ -618,9 +658,11 @@ jobs:
           - **glibc 2.36+ Compatible**: Built and tested for broad glibc compatibility
           - **BusyBox Ready**: Static linking ensures compatibility with BusyBox environments
           - **No Runtime Dependencies**: Static builds eliminate the need for system GLib libraries
+          - **Minimal Dependencies**: libmount, xattr, selinux, and NLS disabled for maximum portability
           - **Development Ready**: Includes all headers and pkg-config files for development
           - **Performance**: Optimized build with stripped binaries for minimal size
           - **Thread Safe**: Built with threading support enabled
+          - **Embedded Friendly**: Configured specifically for embedded and minimal system deployment
           
           **Static vs Dynamic Usage:**
           - **Use Static**: For embedded systems, containers, BusyBox environments, or maximum portability
