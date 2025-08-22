@@ -141,17 +141,72 @@ jobs:
           
           echo "GLib installation completed"
 
+      - name: Create standard lib directory symlinks
+        run: |
+          cd glib-${{ needs.get-version.outputs.exact_version }}/install-root/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          
+          # If libraries are in architecture-specific directory, create symlinks in standard lib/
+          if [ -d "lib/$(uname -m)-linux-gnu" ] && [ ! -d "lib-std" ]; then
+            echo "Creating standard lib directory with symlinks for compatibility..."
+            
+            # Create a standard lib directory with symlinks
+            mkdir -p lib-std
+            cd "lib/$(uname -m)-linux-gnu"
+            
+            # Create symlinks for all files
+            for file in *; do
+              if [ -f "$file" ]; then
+                ln -sf "../lib/$(uname -m)-linux-gnu/$file" "../../lib-std/$file"
+              fi
+            done
+            
+            # Also create symlinks for subdirectories like pkgconfig
+            for dir in */; do
+              if [ -d "$dir" ]; then
+                mkdir -p "../../lib-std/$dir"
+                cd "$dir"
+                for file in *; do
+                  if [ -f "$file" ]; then
+                    ln -sf "../../lib/$(uname -m)-linux-gnu/$dir$file" "../../../lib-std/$dir$file"
+                  fi
+                done
+                cd ..
+              fi
+            done
+            
+            cd ../..
+            echo "Standard lib directory created with symlinks"
+          else
+            echo "Libraries already in standard lib directory or lib-std exists"
+          fi
+
       - name: Verify libraries and dev files
         run: |
           cd glib-${{ needs.get-version.outputs.exact_version }}/install-root/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
           echo "=== GLib Build Verification ==="
           
+          # Detect the actual library directory (can be lib/ or lib/arch-triplet/)
+          if [ -d "lib/$(uname -m)-linux-gnu" ]; then
+            LIB_DIR="lib/$(uname -m)-linux-gnu"
+            echo "Using architecture-specific lib directory: $LIB_DIR"
+            # Also verify standard lib directory with symlinks exists
+            if [ -d "lib-std" ]; then
+              echo "Standard lib directory with symlinks also available: lib-std"
+            fi
+          elif [ -d "lib" ]; then
+            LIB_DIR="lib"
+            echo "Using standard lib directory: $LIB_DIR"
+          else
+            echo "❌ No lib directory found"
+            exit 1
+          fi
+          
           echo "Static libraries:"
-          find lib -name "*.a" | sort
+          find "$LIB_DIR" -name "*.a" | sort
           echo
           
           echo "Shared libraries (.so files):"
-          find lib -name "*.so*" | sort
+          find "$LIB_DIR" -name "*.so*" | sort
           echo
           
           echo "Header files:"
@@ -160,7 +215,7 @@ jobs:
           echo
           
           echo "pkg-config files:"
-          find lib -name "*.pc" | sort
+          find "$LIB_DIR" -name "*.pc" | sort
           echo
           
           echo "Binaries and tools:"
@@ -169,10 +224,10 @@ jobs:
           
           # Verify critical static libraries exist
           REQUIRED_STATIC_LIBS=(
-            "lib/libglib-2.0.a"
-            "lib/libgobject-2.0.a" 
-            "lib/libgio-2.0.a"
-            "lib/libgmodule-2.0.a"
+            "$LIB_DIR/libglib-2.0.a"
+            "$LIB_DIR/libgobject-2.0.a" 
+            "$LIB_DIR/libgio-2.0.a"
+            "$LIB_DIR/libgmodule-2.0.a"
           )
           
           echo "Checking required static libraries:"
@@ -205,9 +260,9 @@ jobs:
           
           # Verify pkg-config files exist
           REQUIRED_PC_FILES=(
-            "lib/pkgconfig/glib-2.0.pc"
-            "lib/pkgconfig/gobject-2.0.pc"
-            "lib/pkgconfig/gio-2.0.pc"
+            "$LIB_DIR/pkgconfig/glib-2.0.pc"
+            "$LIB_DIR/pkgconfig/gobject-2.0.pc"
+            "$LIB_DIR/pkgconfig/gio-2.0.pc"
           )
           
           echo
@@ -257,6 +312,17 @@ jobs:
           cd glib-${{ needs.get-version.outputs.exact_version }}/install-root/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
           echo "=== Stripping debugging symbols ==="
           
+          # Detect the actual library directory (can be lib/ or lib/arch-triplet/)
+          if [ -d "lib/$(uname -m)-linux-gnu" ]; then
+            LIB_DIR="lib/$(uname -m)-linux-gnu"
+            echo "Using architecture-specific lib directory: $LIB_DIR"
+          elif [ -d "lib" ]; then
+            LIB_DIR="lib"
+            echo "Using standard lib directory: $LIB_DIR"
+          else
+            echo "No lib directory found for stripping"
+          fi
+          
           # Strip binaries
           if [ -d "bin" ]; then
             find bin -type f -executable -exec strip --strip-unneeded {} \; 2>/dev/null || true
@@ -264,9 +330,9 @@ jobs:
           fi
           
           # Strip shared libraries
-          if [ -d "lib" ]; then
-            find lib -name "*.so*" -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
-            echo "Stripped shared libraries in lib/"
+          if [ -n "$LIB_DIR" ] && [ -d "$LIB_DIR" ]; then
+            find "$LIB_DIR" -name "*.so*" -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+            echo "Stripped shared libraries in $LIB_DIR"
           fi
           
           # Note: Static libraries should not be stripped as it removes symbols needed for linking
@@ -373,10 +439,18 @@ jobs:
           Use the static libraries (.a files) to create fully self-contained binaries:
           \`\`\`bash
           # For BusyBox/embedded systems - fully static
+          # Note: Libraries may be in lib/arch-triplet/ directory (e.g., lib/x86_64-linux-gnu/)
           gcc -static \\
               -I/path/to/glib/include/glib-2.0 \\
-              -I/path/to/glib/lib/glib-2.0/include \\
-              -L/path/to/glib/lib \\
+              -I/path/to/glib/lib/x86_64-linux-gnu/glib-2.0/include \\
+              -L/path/to/glib/lib/x86_64-linux-gnu \\
+              program.c -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lpthread -lrt -lm -o program
+          
+          # Alternative using lib-std symlinks (if available)
+          gcc -static \\
+              -I/path/to/glib/include/glib-2.0 \\
+              -I/path/to/glib/lib-std/glib-2.0/include \\
+              -L/path/to/glib/lib-std \\
               program.c -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lpthread -lrt -lm -o program
           
           # Verify no dynamic dependencies
@@ -389,17 +463,19 @@ jobs:
           # Using pkg-config (recommended)
           gcc \$(pkg-config --cflags --libs glib-2.0) program.c -o program
           
-          # Manual linking
-          gcc -I/path/to/glib/include/glib-2.0 -I/path/to/glib/lib/glib-2.0/include \\
-              -L/path/to/glib/lib program.c -lglib-2.0 -o program
-          export LD_LIBRARY_PATH=/path/to/glib/lib:\$LD_LIBRARY_PATH
+          # Manual linking (adjust path for architecture-specific directories)
+          gcc -I/path/to/glib/include/glib-2.0 -I/path/to/glib/lib/x86_64-linux-gnu/glib-2.0/include \\
+              -L/path/to/glib/lib/x86_64-linux-gnu program.c -lglib-2.0 -o program
+          export LD_LIBRARY_PATH=/path/to/glib/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH
           \`\`\`
           
           **Using pkg-config:**
           The build includes pkg-config files for easy integration:
           \`\`\`bash
-          # Set PKG_CONFIG_PATH
-          export PKG_CONFIG_PATH=/path/to/glib/lib/pkgconfig:\$PKG_CONFIG_PATH
+          # Set PKG_CONFIG_PATH (adjust for architecture-specific directories)
+          export PKG_CONFIG_PATH=/path/to/glib/lib/x86_64-linux-gnu/pkgconfig:\$PKG_CONFIG_PATH
+          # Or use lib-std symlinks if available
+          export PKG_CONFIG_PATH=/path/to/glib/lib-std/pkgconfig:\$PKG_CONFIG_PATH
           
           # Get compile flags
           pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0
@@ -465,10 +541,11 @@ jobs:
           tar -xzf glib-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz
           
           # Compile with static GLib (no runtime dependencies)
+          # Libraries are in architecture-specific directory
           gcc -static \\
               -I\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/include/glib-2.0 \\
-              -I\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/lib/glib-2.0/include \\
-              -L\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/lib \\
+              -I\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/lib/x86_64-linux-gnu/glib-2.0/include \\
+              -L\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/lib/x86_64-linux-gnu \\
               program.c -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lpthread -lrt -lm -o program
           \`\`\`
           
@@ -476,8 +553,8 @@ jobs:
           \`\`\`bash
           # Set up environment
           export GLIB_ROOT=\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64
-          export LD_LIBRARY_PATH=\$GLIB_ROOT/lib:\$LD_LIBRARY_PATH
-          export PKG_CONFIG_PATH=\$GLIB_ROOT/lib/pkgconfig:\$PKG_CONFIG_PATH
+          export LD_LIBRARY_PATH=\$GLIB_ROOT/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH
+          export PKG_CONFIG_PATH=\$GLIB_ROOT/lib/x86_64-linux-gnu/pkgconfig:\$PKG_CONFIG_PATH
           export PATH=\$GLIB_ROOT/bin:\$PATH
           
           # Compile and run
