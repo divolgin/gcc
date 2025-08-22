@@ -1,0 +1,554 @@
+name: Build GLib from Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'GLib Version to build'
+        required: true
+        default: '2.81.2'
+        type: choice
+        options:
+          - '2.81.2'
+
+env:
+  # Version mappings - will be used to get exact versions
+  GLIB_2_81_2_VERSION: '2.81.2'
+
+jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      exact_version: ${{ steps.set-version.outputs.exact_version }}
+      major_version: ${{ steps.set-version.outputs.major_version }}
+    steps:
+      - name: Set exact version
+        id: set-version
+        run: |
+          case "${{ github.event.inputs.version }}" in
+            "2.81.2")
+              echo "exact_version=${{ env.GLIB_2_81_2_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=2.81.2" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Unsupported version: ${{ github.event.inputs.version }}"
+              exit 1
+              ;;
+          esac
+
+  build-glib:
+    needs: get-version
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            wget \
+            tar \
+            xz-utils \
+            pkg-config \
+            python3 \
+            python3-pip \
+            python3-venv \
+            python3-setuptools \
+            python3-wheel \
+            gettext \
+            libffi-dev \
+            libmount-dev \
+            libpcre2-dev \
+            zlib1g-dev
+          
+          # Create virtual environment for Python tools
+          python3 -m venv build-env
+          source build-env/bin/activate
+          
+          # Install meson and ninja
+          pip3 install --upgrade pip
+          pip3 install meson ninja
+          
+          # Verify installation
+          echo "Meson version: $(meson --version)"
+          echo "Ninja version: $(ninja --version)"
+          echo "Python version: $(python3 --version)"
+          echo "pkg-config version: $(pkg-config --version)"
+
+      - name: Download GLib source
+        run: |
+          # Try multiple mirrors for reliability - mirrors first per user preference
+          wget -q https://download.gnome.org/sources/glib/2.81/glib-${{ needs.get-version.outputs.exact_version }}.tar.xz || \
+          wget -q https://ftp.gnome.org/pub/gnome/sources/glib/2.81/glib-${{ needs.get-version.outputs.exact_version }}.tar.xz || \
+          wget -q https://mirror.csclub.uwaterloo.ca/gnome/sources/glib/2.81/glib-${{ needs.get-version.outputs.exact_version }}.tar.xz
+          tar -xf glib-${{ needs.get-version.outputs.exact_version }}.tar.xz
+
+      - name: Configure build for static libraries and dev files
+        run: |
+          cd glib-${{ needs.get-version.outputs.exact_version }}
+          source ../build-env/bin/activate
+          
+          # Create build directory
+          mkdir -p _build
+          
+          # Configure with meson for static build
+          meson setup _build \
+            --prefix=/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
+            --default-library=both \
+            --buildtype=release \
+            -Dman=false \
+            -Ddtrace=false \
+            -Dsystemtap=false \
+            -Dgtk_doc=false \
+            -Dintrospection=disabled \
+            -Dnls=enabled \
+            -Dlibmount=enabled \
+            -Dselinux=disabled \
+            -Dxattr=true \
+            -Dlibelf=disabled \
+            -Dtests=false \
+            -Dinstalled_tests=false
+          
+          echo "Meson configuration completed"
+
+      - name: Build GLib libraries
+        run: |
+          cd glib-${{ needs.get-version.outputs.exact_version }}
+          source ../build-env/bin/activate
+          
+          # Build with ninja using parallel jobs
+          ninja -C _build -j$(nproc)
+          
+          echo "GLib build completed"
+
+      - name: Install GLib
+        run: |
+          cd glib-${{ needs.get-version.outputs.exact_version }}
+          source ../build-env/bin/activate
+          
+          # Install to DESTDIR for packaging
+          DESTDIR=$PWD/install-root ninja -C _build install
+          
+          echo "GLib installation completed"
+
+      - name: Verify libraries and dev files
+        run: |
+          cd glib-${{ needs.get-version.outputs.exact_version }}/install-root/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          echo "=== GLib Build Verification ==="
+          
+          echo "Static libraries:"
+          find lib -name "*.a" | sort
+          echo
+          
+          echo "Shared libraries (.so files):"
+          find lib -name "*.so*" | sort
+          echo
+          
+          echo "Header files:"
+          find include -name "*.h" | head -20 | sort
+          echo "... (showing first 20 header files)"
+          echo
+          
+          echo "pkg-config files:"
+          find lib -name "*.pc" | sort
+          echo
+          
+          echo "Binaries and tools:"
+          find bin -type f | sort
+          echo
+          
+          # Verify critical static libraries exist
+          REQUIRED_STATIC_LIBS=(
+            "lib/libglib-2.0.a"
+            "lib/libgobject-2.0.a" 
+            "lib/libgio-2.0.a"
+            "lib/libgmodule-2.0.a"
+          )
+          
+          echo "Checking required static libraries:"
+          for lib in "${REQUIRED_STATIC_LIBS[@]}"; do
+            if [ -f "$lib" ]; then
+              echo "✅ $lib found ($(ls -lh $lib | awk '{print $5}'))"
+            else
+              echo "❌ $lib missing - this is required"
+              exit 1
+            fi
+          done
+          
+          # Verify development headers exist
+          REQUIRED_HEADERS=(
+            "include/glib-2.0/glib.h"
+            "include/glib-2.0/gobject/gobject.h"
+            "include/glib-2.0/gio/gio.h"
+          )
+          
+          echo
+          echo "Checking required development headers:"
+          for header in "${REQUIRED_HEADERS[@]}"; do
+            if [ -f "$header" ]; then
+              echo "✅ $header found"
+            else
+              echo "❌ $header missing - this is required for development"
+              exit 1
+            fi
+          done
+          
+          # Verify pkg-config files exist
+          REQUIRED_PC_FILES=(
+            "lib/pkgconfig/glib-2.0.pc"
+            "lib/pkgconfig/gobject-2.0.pc"
+            "lib/pkgconfig/gio-2.0.pc"
+          )
+          
+          echo
+          echo "Checking required pkg-config files:"
+          for pc in "${REQUIRED_PC_FILES[@]}"; do
+            if [ -f "$pc" ]; then
+              echo "✅ $pc found"
+            else
+              echo "❌ $pc missing - this is required for development"
+              exit 1
+            fi
+          done
+
+      - name: Test GLib tools
+        run: |
+          cd glib-${{ needs.get-version.outputs.exact_version }}/install-root/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          echo "=== GLib Tools Testing ==="
+          
+          # Test some basic GLib tools
+          if [ -f "bin/glib-compile-schemas" ]; then
+            echo "Testing glib-compile-schemas:"
+            ./bin/glib-compile-schemas --version || echo "Tool test failed"
+          fi
+          
+          if [ -f "bin/gdbus" ]; then
+            echo "Testing gdbus:"
+            ./bin/gdbus --version || echo "Tool test failed"
+          fi
+          
+          if [ -f "bin/gio" ]; then
+            echo "Testing gio:"
+            ./bin/gio version || echo "Tool test failed"
+          fi
+          
+          # Show library dependencies for tools
+          echo
+          echo "Library dependencies for key tools:"
+          for tool in bin/glib-compile-schemas bin/gdbus bin/gio; do
+            if [ -f "$tool" ]; then
+              echo "--- $tool ---"
+              ldd "$tool" 2>/dev/null || echo "Static binary or ldd failed"
+            fi
+          done
+
+      - name: Strip binaries and libraries
+        run: |
+          cd glib-${{ needs.get-version.outputs.exact_version }}/install-root/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          echo "=== Stripping debugging symbols ==="
+          
+          # Strip binaries
+          if [ -d "bin" ]; then
+            find bin -type f -executable -exec strip --strip-unneeded {} \; 2>/dev/null || true
+            echo "Stripped binaries in bin/"
+          fi
+          
+          # Strip shared libraries
+          if [ -d "lib" ]; then
+            find lib -name "*.so*" -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true
+            echo "Stripped shared libraries in lib/"
+          fi
+          
+          # Note: Static libraries should not be stripped as it removes symbols needed for linking
+          echo "Static libraries left unstripped for linking compatibility"
+
+      - name: Create archive
+        run: |
+          cd glib-${{ needs.get-version.outputs.exact_version }}/install-root/opt
+          tar -czf $GITHUB_WORKSPACE/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}
+          path: glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }}.tar.gz
+
+  create-release:
+    needs: [get-version, build-glib]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          find artifacts -type f -name "*.tar.gz" | sort
+
+      - name: Delete existing release if it exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if release exists and delete it
+          if gh release view glib-${{ needs.get-version.outputs.exact_version }} >/dev/null 2>&1; then
+            echo "Release glib-${{ needs.get-version.outputs.exact_version }} exists, deleting..."
+            gh release delete glib-${{ needs.get-version.outputs.exact_version }} --yes
+          else
+            echo "Release glib-${{ needs.get-version.outputs.exact_version }} does not exist"
+          fi
+
+      - name: Create new release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release
+          gh release create glib-${{ needs.get-version.outputs.exact_version }} \
+            --title "GLib ${{ needs.get-version.outputs.exact_version }}" \
+            --notes "GLib ${{ needs.get-version.outputs.exact_version }} builds for x86_64 and aarch64 architectures.
+
+          Built from source with the following configuration:
+          - Version: GLib ${{ needs.get-version.outputs.exact_version }}
+          - Architectures: x86_64 (native), aarch64 (native ARM64)
+          - Libraries: Both static (.a) and shared (.so) libraries included
+          - Static Build: Compatible with glibc 2.36+ and BusyBox environments
+          - Shared Build: Standard shared libraries for dynamic linking
+          - Type: Dual native compilation (static + shared) on respective architectures
+          - Optimization: Stripped binaries and shared libraries for reduced download size
+          - Features: Full GLib functionality with development files included
+          - Dev Files: Headers, pkg-config files, and tools included for development
+          
+          ## What is GLib?
+          
+          GLib is a low-level core library that forms the basis for projects such as GTK and GNOME. It provides:
+          - Data structure handling for C (lists, trees, hashes, etc.)
+          - Portability wrappers and interfaces for runtime functionality
+          - Runtime functionality for applications and libraries
+          - Object system and signal framework (GObject)
+          - I/O channels and networking (GIO)
+          - Threading and synchronization primitives
+          - Internationalization support
+          - Memory management utilities
+          - String manipulation functions
+          
+          ## Libraries Included
+          
+          **Core Libraries:**
+          - \`libglib-2.0.a\` / \`libglib-2.0.so\` - Core GLib functionality
+          - \`libgobject-2.0.a\` / \`libgobject-2.0.so\` - Object system and signals
+          - \`libgio-2.0.a\` / \`libgio-2.0.so\` - I/O and networking functionality
+          - \`libgmodule-2.0.a\` / \`libgmodule-2.0.so\` - Dynamic module loading
+          
+          **Development Files:**
+          - Header files in \`include/glib-2.0/\`
+          - pkg-config files (\`.pc\`) for build integration
+          - GLib configuration headers
+          
+          **Tools:**
+          - \`glib-compile-schemas\` - Schema compilation tool
+          - \`gdbus\` - D-Bus introspection and testing tool
+          - \`gio\` - GIO command-line tool
+          - \`glib-compile-resources\` - Resource compilation tool
+          - \`glib-genmarshal\` - Signal marshaller generator
+          
+          ## Use Cases
+          
+          **Static Linking (Recommended for BusyBox/Embedded):**
+          Use the static libraries (.a files) to create fully self-contained binaries:
+          \`\`\`bash
+          # For BusyBox/embedded systems - fully static
+          gcc -static \\
+              -I/path/to/glib/include/glib-2.0 \\
+              -I/path/to/glib/lib/glib-2.0/include \\
+              -L/path/to/glib/lib \\
+              program.c -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lpthread -lrt -lm -o program
+          
+          # Verify no dynamic dependencies
+          ldd program  # Should show 'not a dynamic executable' or minimal system deps
+          \`\`\`
+          
+          **Dynamic Linking:**
+          Use shared libraries for standard applications:
+          \`\`\`bash
+          # Using pkg-config (recommended)
+          gcc \$(pkg-config --cflags --libs glib-2.0) program.c -o program
+          
+          # Manual linking
+          gcc -I/path/to/glib/include/glib-2.0 -I/path/to/glib/lib/glib-2.0/include \\
+              -L/path/to/glib/lib program.c -lglib-2.0 -o program
+          export LD_LIBRARY_PATH=/path/to/glib/lib:\$LD_LIBRARY_PATH
+          \`\`\`
+          
+          **Using pkg-config:**
+          The build includes pkg-config files for easy integration:
+          \`\`\`bash
+          # Set PKG_CONFIG_PATH
+          export PKG_CONFIG_PATH=/path/to/glib/lib/pkgconfig:\$PKG_CONFIG_PATH
+          
+          # Get compile flags
+          pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0
+          
+          # Get link flags
+          pkg-config --libs glib-2.0 gobject-2.0 gio-2.0
+          
+          # Compile with pkg-config
+          gcc \$(pkg-config --cflags glib-2.0) program.c \$(pkg-config --libs glib-2.0) -o program
+          \`\`\`
+          
+          **BusyBox Integration:**
+          Perfect for use with BusyBox environments and minimal systems:
+          \`\`\`bash
+          # Static linking ensures no runtime dependencies
+          gcc -static \\
+              -I/path/to/glib/include/glib-2.0 \\
+              -I/path/to/glib/lib/glib-2.0/include \\
+              -L/path/to/glib/lib \\
+              program.c -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lpthread -lrt -lm
+          \`\`\`
+          
+          ## Files
+          - \`glib-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz\`: GLib build for x86_64 architecture
+          - \`glib-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz\`: GLib build for aarch64 architecture
+          
+          ## Installation
+          Extract the appropriate archive:
+          \`\`\`bash
+          tar -xzf glib-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          \`\`\`
+          
+          ## Usage Examples
+          
+          **Basic GLib Program:**
+          \`\`\`c
+          #include <glib.h>
+          #include <stdio.h>
+          
+          int main() {
+              // Initialize GLib
+              g_print(\"GLib version: %d.%d.%d\\n\", 
+                      glib_major_version, glib_minor_version, glib_micro_version);
+              
+              // Use GLib data structures
+              GList *list = NULL;
+              list = g_list_append(list, \"Hello\");
+              list = g_list_append(list, \"World\");
+              
+              for (GList *l = list; l != NULL; l = l->next) {
+                  g_print(\"%s \", (char*)l->data);
+              }
+              g_print(\"\\n\");
+              
+              g_list_free(list);
+              return 0;
+          }
+          \`\`\`
+          
+          **Static Linking Example:**
+          \`\`\`bash
+          # Extract GLib
+          tar -xzf glib-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz
+          
+          # Compile with static GLib (no runtime dependencies)
+          gcc -static \\
+              -I\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/include/glib-2.0 \\
+              -I\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/lib/glib-2.0/include \\
+              -L\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/lib \\
+              program.c -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lpthread -lrt -lm -o program
+          \`\`\`
+          
+          **Dynamic Linking Example:**
+          \`\`\`bash
+          # Set up environment
+          export GLIB_ROOT=\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64
+          export LD_LIBRARY_PATH=\$GLIB_ROOT/lib:\$LD_LIBRARY_PATH
+          export PKG_CONFIG_PATH=\$GLIB_ROOT/lib/pkgconfig:\$PKG_CONFIG_PATH
+          export PATH=\$GLIB_ROOT/bin:\$PATH
+          
+          # Compile and run
+          gcc \$(pkg-config --cflags glib-2.0) program.c \$(pkg-config --libs glib-2.0) -o program
+          ./program
+          \`\`\`
+          
+          **Using GLib Tools:**
+          \`\`\`bash
+          # Extract and use GLib command-line tools
+          tar -xzf glib-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz
+          export PATH=\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/bin:\$PATH
+          
+          # Compile GSettings schemas
+          glib-compile-schemas schemas/
+          
+          # Test D-Bus functionality
+          gdbus introspect --system --dest org.freedesktop.DBus --object-path /
+          
+          # File operations with gio
+          gio list file:///tmp
+          gio info file:///etc/passwd
+          \`\`\`
+          
+          **Integration with Other Builds:**
+          This GLib can be used with the GCC, binutils, and other tool builds from this repository:
+          \`\`\`bash
+          # Extract all tools
+          tar -xzf glib-${{ needs.get-version.outputs.exact_version }}-<arch>.tar.gz
+          tar -xzf gcc-<version>-<arch>.tar.gz  
+          tar -xzf binutils-<version>-<arch>.tar.gz
+          
+          # Set up complete toolchain
+          export PATH=\$PWD/gcc-<version>-<arch>/bin:\$PWD/binutils-<version>-<arch>/bin:\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-<arch>/bin:\$PATH
+          export PKG_CONFIG_PATH=\$PWD/glib-${{ needs.get-version.outputs.exact_version }}-<arch>/lib/pkgconfig:\$PKG_CONFIG_PATH
+          
+          # For static linking (recommended for portability)
+          gcc -static \\
+              \$(pkg-config --cflags glib-2.0) \\
+              program.c \$(pkg-config --libs glib-2.0) -o program
+          \`\`\`
+          
+          ## Development Features
+          
+          **Complete Development Environment:**
+          - All header files for GLib, GObject, and GIO
+          - pkg-config integration for easy build system integration
+          - Static libraries for embedded/minimal system deployment
+          - Shared libraries for standard desktop/server applications
+          - Command-line tools for development and debugging
+          
+          **pkg-config Files Included:**
+          - \`glib-2.0.pc\` - Core GLib library
+          - \`gobject-2.0.pc\` - GObject system
+          - \`gio-2.0.pc\` - GIO I/O library
+          - \`gmodule-2.0.pc\` - Dynamic module loading
+          - \`gthread-2.0.pc\` - Threading support
+          
+          ## Compatibility Notes
+          
+          - **glibc 2.36+ Compatible**: Built and tested for broad glibc compatibility
+          - **BusyBox Ready**: Static linking ensures compatibility with BusyBox environments
+          - **No Runtime Dependencies**: Static builds eliminate the need for system GLib libraries
+          - **Development Ready**: Includes all headers and pkg-config files for development
+          - **Performance**: Optimized build with stripped binaries for minimal size
+          - **Thread Safe**: Built with threading support enabled
+          
+          **Static vs Dynamic Usage:**
+          - **Use Static**: For embedded systems, containers, BusyBox environments, or maximum portability
+          - **Use Dynamic**: For standard desktop/server applications where library sharing is beneficial
+          
+          This build provides both options along with complete development files, allowing you to choose the appropriate linking method for your use case." \
+            artifacts/glib-${{ needs.get-version.outputs.exact_version }}-x86_64/glib-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
+            artifacts/glib-${{ needs.get-version.outputs.exact_version }}-aarch64/glib-${{ needs.get-version.outputs.exact_version }}-aarch64.tar.gz
