@@ -103,13 +103,16 @@ jobs:
           cd glib-${{ needs.get-version.outputs.exact_version }}
           source ../build-env/bin/activate
           
-          # Set environment for static linking
-          export LDFLAGS="-static -static-libgcc"
-          export CFLAGS="-static -fPIC"
-          export PKG_CONFIG="pkg-config --static"
+          # Set environment for proper library support
+          # Note: Not using PKG_CONFIG="pkg-config --static" to avoid PIC issues with shared lib builds
+          export CFLAGS="-fPIC"
           
           # Create build directory
           mkdir -p _build
+          
+          # Set RPATH for architecture-specific library directory
+          ARCH_TRIPLET=$(uname -m)-linux-gnu
+          RPATH_ARG="-Wl,-rpath,\$ORIGIN/../lib/$ARCH_TRIPLET"
           
           # Configure with meson for static build - disable all system dependencies
           # Use both libraries but configure for minimal dependencies
@@ -117,7 +120,6 @@ jobs:
             --prefix=/opt/glib-${{ needs.get-version.outputs.exact_version }}-${{ matrix.arch }} \
             --default-library=both \
             --buildtype=release \
-            --prefer-static \
             -Dman=false \
             -Ddtrace=false \
             -Dsystemtap=false \
@@ -131,7 +133,9 @@ jobs:
             -Dtests=false \
             -Dinstalled_tests=false \
             -Dglib_debug=disabled \
-            -Db_staticpic=true
+            -Db_staticpic=true \
+            -Dc_link_args="$RPATH_ARG" \
+            -Dcpp_link_args="$RPATH_ARG"
           
           echo "Meson configuration completed"
 
@@ -311,39 +315,44 @@ jobs:
             ./bin/gio version || echo "Tool test failed"
           fi
           
-          # Verify static linking for key tools
+          # Verify that problematic system dependencies are avoided
           echo
-          echo "=== Static Link Verification ==="
-          FAILED_STATIC_CHECK=0
+          echo "=== System Dependency Verification ==="
+          FAILED_DEPENDENCY_CHECK=0
           
           for tool in bin/glib-compile-schemas bin/gdbus bin/gio; do
             if [ -f "$tool" ]; then
               echo "--- Checking $tool ---"
               
-              # Check if binary is dynamically linked
+              # Check if binary has problematic dependencies
               if ldd_output=$(ldd "$tool" 2>/dev/null); then
-                echo "❌ $tool is dynamically linked:"
+                echo "Dynamic dependencies found:"
                 echo "$ldd_output"
                 
-                # Check for problematic dependencies
+                # Check for problematic dependencies that we disabled
                 if echo "$ldd_output" | grep -E "(libmount|libselinux|libattr)" > /dev/null; then
-                  echo "🚨 CRITICAL: $tool depends on system libraries that should be static!"
-                  FAILED_STATIC_CHECK=1
+                  echo "🚨 CRITICAL: $tool depends on system libraries that should be disabled!"
+                  FAILED_DEPENDENCY_CHECK=1
+                else
+                  echo "✅ No problematic system dependencies found"
                 fi
               else
-                echo "✅ $tool appears to be statically linked"
+                echo "✅ $tool appears to be statically linked (no ldd output)"
               fi
               echo
             fi
           done
           
+          # Note: Tools may still be dynamically linked to glibc, which is normal
+          echo "Note: Tools may link to glibc dynamically, but static libraries (.a) are available for user static linking"
+          
           # Fail if any tools have problematic dependencies
-          if [ $FAILED_STATIC_CHECK -eq 1 ]; then
-            echo "❌ Some binaries are not properly statically linked!"
+          if [ $FAILED_DEPENDENCY_CHECK -eq 1 ]; then
+            echo "❌ Some binaries depend on disabled system libraries!"
             echo "This indicates the build configuration needs adjustment."
             exit 1
           else
-            echo "✅ All checked binaries appear to be properly statically linked"
+            echo "✅ All checked binaries avoid problematic system dependencies"
           fi
 
       - name: Strip binaries and libraries
@@ -432,10 +441,10 @@ jobs:
           - Version: GLib ${{ needs.get-version.outputs.exact_version }}
           - Architectures: x86_64 (native), aarch64 (native ARM64)
           - Libraries: Both static (.a) and shared (.so) libraries included
-          - Static Build: Fully static binaries with no system library dependencies
-          - Shared Build: Standard shared libraries for dynamic linking  
+          - Static Libraries: Provided for creating fully static user applications
+          - Shared Libraries: Standard shared libraries for dynamic linking  
           - Type: Dual native compilation (static + shared) on respective architectures
-          - Static Configuration: libmount, xattr, selinux, and NLS disabled for minimal dependencies
+          - Minimal Dependencies: libmount, xattr, selinux, and NLS disabled for maximum portability
           - Optimization: Stripped binaries and shared libraries for reduced download size
           - Features: Core GLib functionality optimized for embedded/static deployment
           - Dev Files: Headers, pkg-config files, and tools included for development
@@ -657,7 +666,7 @@ jobs:
           
           - **glibc 2.36+ Compatible**: Built and tested for broad glibc compatibility
           - **BusyBox Ready**: Static linking ensures compatibility with BusyBox environments
-          - **No Runtime Dependencies**: Static builds eliminate the need for system GLib libraries
+          - **Static Library Support**: Static libraries (.a) available for creating dependency-free applications
           - **Minimal Dependencies**: libmount, xattr, selinux, and NLS disabled for maximum portability
           - **Development Ready**: Includes all headers and pkg-config files for development
           - **Performance**: Optimized build with stripped binaries for minimal size
