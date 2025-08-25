@@ -11,6 +11,7 @@ on:
         options:
           - '2.41'
           - '2.36'
+          - '2.35'
       branch:
         description: 'Branch to checkout for workflow'
         required: false
@@ -21,6 +22,7 @@ env:
   # Version mappings - will be used to get exact versions
   GLIBC_2_41_VERSION: '2.41'
   GLIBC_2_36_VERSION: '2.36'
+  GLIBC_2_35_VERSION: '2.35'
 
 jobs:
   get-version:
@@ -40,6 +42,10 @@ jobs:
             "2.36")
               echo "exact_version=${{ env.GLIBC_2_36_VERSION }}" >> $GITHUB_OUTPUT
               echo "major_version=2.36" >> $GITHUB_OUTPUT
+              ;;
+            "2.35")
+              echo "exact_version=${{ env.GLIBC_2_35_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=2.35" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Unsupported version: ${{ github.event.inputs.version }}"
@@ -377,7 +383,8 @@ jobs:
           
           - **glibc 2.41 (Default)**: Latest stable version with newest features and security fixes
           - **glibc 2.36**: Stable LTS-style version, good balance of features and compatibility
-          - **Ubuntu 22.04**: Ships with glibc 2.35 (between our two versions)
+          - **glibc 2.35**: Ubuntu 22.04 compatible version, matches the system glibc version
+          - **Ubuntu 22.04**: Ships with glibc 2.35 (exact match with our 2.35 build)
           - **Forward Compatibility**: Programs built with older glibc run on systems with newer glibc
           - **Backward Compatibility**: Programs built with newer glibc may not run on systems with older glibc
           - **Kernel Requirements**: Built with kernel 3.2+ support (covers all modern distributions)
@@ -385,6 +392,7 @@ jobs:
           **Version Selection Guide:**
           - **Use 2.41**: For latest features, security fixes, and forward-looking builds
           - **Use 2.36**: For maximum compatibility with existing systems and containers
+          - **Use 2.35**: For Ubuntu 22.04 compatibility and systems requiring exact glibc version match
           
           Choose based on your target deployment environment and compatibility requirements." \
             artifacts/glibc-${{ needs.get-version.outputs.exact_version }}-x86_64/glibc-${{ needs.get-version.outputs.exact_version }}-x86_64.tar.gz \
