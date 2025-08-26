@@ -14,11 +14,6 @@ on:
           - '13.3.0'
           - '12.4.0'
           - '11.2.0'
-      branch:
-        description: 'Branch to checkout for workflow'
-        required: false
-        default: 'main'
-        type: string
 
 env:
   # Dependency versions for static compilation
@@ -79,8 +74,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
 
       - name: Set up build environment
         run: |
@@ -606,8 +599,8 @@ jobs:
       - name: Build summary
         run: |
           echo "=== GCC Build Complete ==="
-          if [ "${{ github.event.inputs.branch }}" != "main" ] && [ "${{ github.event.inputs.branch }}" != "" ]; then
-            echo "ℹ️  Note: Built from branch '${{ github.event.inputs.branch }}' - no release will be created"
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "ℹ️  Note: Built from branch '${{ github.ref_name }}' - no release will be created"
             echo "   Artifacts are available for download from this workflow run"
           else
             echo "✅ Built from main branch - release will be created with artifacts"
@@ -633,14 +626,12 @@ jobs:
   create-release:
     needs: [get-version, build-gcc]
     runs-on: ubuntu-latest
-    if: github.event.inputs.branch == 'main' || github.event.inputs.branch == ''
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
