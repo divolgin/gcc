@@ -6,13 +6,14 @@ on:
       version:
         description: 'GCC Version to build'
         required: true
-        default: '15'
+        default: '15.1.0'
         type: choice
         options:
-          - '15'
-          - '14'
-          - '13'
-          - '12'
+          - '15.1.0'
+          - '14.3.0'
+          - '13.3.0'
+          - '12.4.0'
+          - '11.2.0'
       branch:
         description: 'Branch to checkout for workflow'
         required: false
@@ -20,12 +21,6 @@ on:
         type: string
 
 env:
-  # Version mappings - will be used to get exact versions
-  GCC_15_VERSION: '15.1.0'
-  GCC_14_VERSION: '14.3.0'
-  GCC_13_VERSION: '13.3.0'
-  GCC_12_VERSION: '12.4.0'
-  
   # Dependency versions for static compilation
   GMP_VERSION: '6.3.0'
   MPFR_VERSION: '4.2.1'
@@ -42,25 +37,30 @@ jobs:
       - name: Set exact version
         id: set-version
         run: |
-          case "${{ github.event.inputs.version }}" in
-            "15")
-              echo "exact_version=${{ env.GCC_15_VERSION }}" >> $GITHUB_OUTPUT
+          VERSION="${{ github.event.inputs.version }}"
+          case "$VERSION" in
+            "15.1.0")
+              echo "exact_version=$VERSION" >> $GITHUB_OUTPUT
               echo "major_version=15" >> $GITHUB_OUTPUT
               ;;
-            "14")
-              echo "exact_version=${{ env.GCC_14_VERSION }}" >> $GITHUB_OUTPUT
+            "14.3.0")
+              echo "exact_version=$VERSION" >> $GITHUB_OUTPUT
               echo "major_version=14" >> $GITHUB_OUTPUT
               ;;
-            "13")
-              echo "exact_version=${{ env.GCC_13_VERSION }}" >> $GITHUB_OUTPUT
+            "13.3.0")
+              echo "exact_version=$VERSION" >> $GITHUB_OUTPUT
               echo "major_version=13" >> $GITHUB_OUTPUT
               ;;
-            "12")
-              echo "exact_version=${{ env.GCC_12_VERSION }}" >> $GITHUB_OUTPUT
+            "12.4.0")
+              echo "exact_version=$VERSION" >> $GITHUB_OUTPUT
               echo "major_version=12" >> $GITHUB_OUTPUT
               ;;
+            "11.2.0")
+              echo "exact_version=$VERSION" >> $GITHUB_OUTPUT
+              echo "major_version=11" >> $GITHUB_OUTPUT
+              ;;
             *)
-              echo "Unsupported version: ${{ github.event.inputs.version }}"
+              echo "Unsupported version: $VERSION"
               exit 1
               ;;
           esac
