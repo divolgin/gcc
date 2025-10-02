@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - '2.41'
+          - '2.39'
           - '2.36'
           - '2.35'
       branch:
@@ -21,6 +22,7 @@ on:
 env:
   # Version mappings - will be used to get exact versions
   GLIBC_2_41_VERSION: '2.41'
+  GLIBC_2_39_VERSION: '2.39'
   GLIBC_2_36_VERSION: '2.36'
   GLIBC_2_35_VERSION: '2.35'
 
@@ -38,6 +40,10 @@ jobs:
             "2.41")
               echo "exact_version=${{ env.GLIBC_2_41_VERSION }}" >> $GITHUB_OUTPUT
               echo "major_version=2.41" >> $GITHUB_OUTPUT
+              ;;
+            "2.39")
+              echo "exact_version=${{ env.GLIBC_2_39_VERSION }}" >> $GITHUB_OUTPUT
+              echo "major_version=2.39" >> $GITHUB_OUTPUT
               ;;
             "2.36")
               echo "exact_version=${{ env.GLIBC_2_36_VERSION }}" >> $GITHUB_OUTPUT
